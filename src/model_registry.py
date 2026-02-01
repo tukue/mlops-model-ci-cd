@@ -37,7 +37,9 @@ class ModelRegistry:
         active_path = Path("artifacts/model.joblib")
         if active_path.exists():
             active_path.unlink()
-        active_path.symlink_to(metadata[version]["path"])
+        
+        model_path = Path(metadata[version]["path"])
+        active_path.symlink_to(model_path.resolve())
     
     def get_active_model(self):
         metadata = self._load_metadata()

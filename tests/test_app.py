@@ -6,7 +6,7 @@ client = TestClient(app)
 def test_root():
     response = client.get("/")
     assert response.status_code == 200
-    assert response.json() == {"message": "MLOps API is running", "endpoints": ["/health", "/predict", "/docs"]}
+    assert response.json() == {"message": "MLOps API is running", "endpoints": ["/health", "/predict", "/metrics", "/docs"]}
 
 def test_health():
     response = client.get("/health")
