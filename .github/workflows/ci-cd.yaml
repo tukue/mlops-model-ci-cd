@@ -30,4 +30,27 @@ jobs:
 
     - name: Run Tests
       run: |
-        pytest tests/
+        pytest tests/ -v
+
+    - name: Test Docker Build
+      run: |
+        docker build -t mlops-api .
+        
+    - name: Test API Endpoints
+      run: |
+        # Start API in background
+        uvicorn app.main:app --host 0.0.0.0 --port 8000 &
+        sleep 5
+        
+        # Test endpoints
+        curl -f http://localhost:8000/health
+        curl -f http://localhost:8000/model-info
+        curl -f http://localhost:8000/metrics
+        
+        # Test prediction
+        curl -f -X POST http://localhost:8000/predict \
+          -H "Content-Type: application/json" \
+          -d '{"features": [5.1, 3.5, 1.4, 0.2]}'
+        
+        # Stop background process
+        pkill -f uvicorn

@@ -5,6 +5,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse, Response
 from app.schemas import PredictRequest, PredictResponse
 from prometheus_client import Counter, Histogram, generate_latest
+from src.model_registry import ModelRegistry
 
 app = FastAPI(title="MLOps ci-cd API")
 
@@ -17,16 +18,20 @@ API_REQUESTS = Counter('api_requests_total', 'Total API requests', ['method', 'e
 PROJECT_ROOT = Path(__file__).parent.parent
 MODEL_PATH = PROJECT_ROOT / "artifacts" / "model.joblib"
 _model = None
+_model_version = None
 
 def get_model():
-    global _model
+    global _model, _model_version
     if _model is None:
-        if not MODEL_PATH.exists():
+        registry = ModelRegistry()
+        version, model = registry.get_active_model()
+        if model is None:
             raise FileNotFoundError(
-                f"Model not found at {MODEL_PATH}. Train it first: python -m src.train"
+                f"No active model found. Train it first: python -m src.train"
             )
-        _model = joblib.load(MODEL_PATH)
-    return _model
+        _model = model
+        _model_version = version
+    return _model, _model_version
 
 @app.middleware("http")
 async def track_requests(request, call_next):
@@ -44,11 +49,27 @@ async def track_requests(request, call_next):
 
 @app.get("/")
 def root():
-    return {"message": "MLOps API is running", "endpoints": ["/health", "/predict", "/metrics", "/docs"]}
+    return {"message": "MLOps API is running", "endpoints": ["/health", "/predict", "/metrics", "/model-info", "/docs"]}
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+@app.get("/model-info")
+def model_info():
+    try:
+        registry = ModelRegistry()
+        version, _ = registry.get_active_model()
+        metadata = registry.list_models()
+        if version and version in metadata:
+            return {
+                "active_version": version,
+                "created_at": metadata[version]["created_at"],
+                "metrics": metadata[version]["metrics"]
+            }
+        return {"error": "No active model found"}
+    except Exception as e:
+        return {"error": str(e)}
 
 @app.get("/metrics")
 def metrics():
@@ -58,10 +79,10 @@ def metrics():
 def predict(req: PredictRequest):
     with PREDICTION_LATENCY.time():
         try:
-            model = get_model()
+            model, version = get_model()
             pred = int(model.predict([req.features])[0])
             PREDICTION_COUNT.inc()
-            return PredictResponse(prediction=pred)
+            return PredictResponse(prediction=pred, model_version=version)
         except FileNotFoundError as e:
             raise HTTPException(status_code=503, detail=str(e))
 

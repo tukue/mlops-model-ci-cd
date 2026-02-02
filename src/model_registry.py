@@ -33,13 +33,20 @@ class ModelRegistry:
             metadata[v]["is_active"] = (v == version)
         self._save_metadata(metadata)
         
-        # Create symlink to active model
+        # Create symlink to active model (Linux) or copy (Windows)
+        import os
+        import shutil
         active_path = Path("artifacts/model.joblib")
         if active_path.exists():
             active_path.unlink()
         
         model_path = Path(metadata[version]["path"])
-        active_path.symlink_to(model_path.resolve())
+        
+        # Try symlink first (Linux/CI), fallback to copy (Windows)
+        try:
+            active_path.symlink_to(model_path.resolve())
+        except (OSError, NotImplementedError):
+            shutil.copy2(model_path, active_path)
     
     def get_active_model(self):
         metadata = self._load_metadata()

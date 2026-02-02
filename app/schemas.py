@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List
+from typing import List, Optional
 
 class PredictRequest(BaseModel):
     features: List[float] = Field(..., min_length=4, max_length=4)
@@ -16,3 +16,4 @@ class PredictRequest(BaseModel):
 
 class PredictResponse(BaseModel):
     prediction: int
+    model_version: Optional[str] = None
