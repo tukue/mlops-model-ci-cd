@@ -21,14 +21,21 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-        pip install pytest httpx
+        if [ -f requirements.txt ]; then python -m pip install -r requirements.txt; fi
+        # Ensure pytest and httpx are installed for tests
+        python -m pip install pytest httpx
 
-    - name: Train Model
+    - name: Initialize DVC (for CI environment)
       run: |
-        python -m src.train
+        dvc init --no-scm
+        # Ensure artifacts directory exists for dvc repro
+        mkdir -p artifacts
 
-    - name: Run Tests
+    - name: Train Model (via DVC)
+      run: |
+        dvc repro
+
+    - name: Run Tests (Unit, Integration, and MLflow)
       run: |
         pytest tests/ -v
 
@@ -43,9 +50,9 @@ jobs:
         sleep 5
         
         # Test endpoints
+        curl -f http://localhost:8000/
         curl -f http://localhost:8000/health
-        curl -f http://localhost:8000/model-info
-        curl -f http://localhost:8000/metrics
+        curl -f http://localhost:8000/docs
         
         # Test prediction
         curl -f -X POST http://localhost:8000/predict \

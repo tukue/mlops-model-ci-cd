@@ -19,6 +19,10 @@ artifacts/
 build/
 dist/
 
-# DVC - We want to track dvc.yaml and dvc.lock, but ignore the internal cache
+# DVC
 .dvc/cache
 .dvc/tmp
+
+# MLflow
+mlruns/
+.trash/
