@@ -2,6 +2,7 @@ from pathlib import Path
 import joblib
 import mlflow
 import mlflow.sklearn
+from mlflow.models.signature import infer_signature
 from sklearn.datasets import load_iris
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
@@ -46,8 +47,16 @@ def main() -> None:
         joblib.dump(model, MODEL_PATH)
         print(f"Saved model to {MODEL_PATH}")
         
-        # Log model to MLflow
-        mlflow.sklearn.log_model(model, "model")
+        # Log model to MLflow with signature and input example
+        signature = infer_signature(X_train, model.predict(X_train))
+        input_example = X_train[:5]
+        
+        mlflow.sklearn.log_model(
+            model, 
+            "model",
+            signature=signature,
+            input_example=input_example
+        )
 
 if __name__ == "__main__":
     main()
