@@ -47,10 +47,13 @@ jobs:
         
     - name: Test API Endpoints
       run: |
-        # Start API in background
-        # We run from root, so app.main:app will look for artifacts/model.joblib relative to root
+        # Copy model to a known location for the test
+        cp artifacts/model.joblib /tmp/model.joblib
+        
+        # Start API in background with MODEL_PATH env var
+        export MODEL_PATH=/tmp/model.joblib
         uvicorn app.main:app --host 127.0.0.1 --port 8000 &
-        sleep 5
+        sleep 10
         
         # Test endpoints
         curl -f http://127.0.0.1:8000/

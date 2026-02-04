@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 import joblib
 import time
@@ -15,22 +16,23 @@ PREDICTION_LATENCY = Histogram('ml_prediction_duration_seconds', 'Prediction lat
 API_REQUESTS = Counter('api_requests_total', 'Total API requests', ['method', 'endpoint', 'status'])
 
 # Use absolute path relative to project root
-PROJECT_ROOT = Path(__file__).parent.parent
-MODEL_PATH = PROJECT_ROOT / "artifacts" / "model.joblib"
+# Check for an environment variable first, otherwise fall back to the default path.
+# This makes the model path configurable, which is great for CI/CD and production.
+MODEL_PATH = Path(os.environ.get("MODEL_PATH", Path(__file__).parent.parent / "artifacts" / "model.joblib"))
+
 _model = None
 _model_version = None
 
 def get_model():
     global _model, _model_version
     if _model is None:
-        registry = ModelRegistry()
-        version, model = registry.get_active_model()
-        if model is None:
+        if not MODEL_PATH.exists():
             raise FileNotFoundError(
-                f"No active model found. Train it first: python -m src.train"
+                f"Model not found at {MODEL_PATH}. Train it first or check MODEL_PATH env var."
             )
-        _model = model
-        _model_version = version
+        _model = joblib.load(MODEL_PATH)
+        # For simplicity, we'll just use the file's existence as the "version" in this context
+        _model_version = "loaded_from_path"
     return _model, _model_version
 
 @app.middleware("http")
