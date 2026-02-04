@@ -34,6 +34,8 @@ jobs:
     - name: Train Model (via DVC)
       run: |
         dvc repro
+        # Verify model exists
+        ls -l artifacts/model.joblib
 
     - name: Run Tests (Unit, Integration, and MLflow)
       run: |
@@ -46,6 +48,7 @@ jobs:
     - name: Test API Endpoints
       run: |
         # Start API in background
+        # We run from root, so app.main:app will look for artifacts/model.joblib relative to root
         uvicorn app.main:app --host 127.0.0.1 --port 8000 &
         sleep 5
         
