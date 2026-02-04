@@ -1,0 +1,7 @@
+stages:
+  train:
+    cmd: python -m src.train
+    deps:
+      - src/train.py
+    outs:
+      - artifacts/model.joblib

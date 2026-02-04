@@ -5,4 +5,4 @@ joblib
 pydantic
 pytest
 httpx
-prometheus-client
+dvc

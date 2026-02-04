@@ -5,6 +5,7 @@ A production-ready MLOps system demonstrating end-to-end machine learning lifecy
 ## 🚀 Features
 
 - **Automated ML Pipeline**: GitHub Actions CI/CD with model training and testing
+- **Data Versioning**: DVC (Data Version Control) for tracking data and model pipelines
 - **Model Versioning**: Custom registry with deployment logic and rollback capability
 - **Production API**: FastAPI with health checks, metrics, and error handling
 - **Monitoring**: Prometheus metrics for predictions, latency, and API requests
@@ -17,6 +18,8 @@ A production-ready MLOps system demonstrating end-to-end machine learning lifecy
 GitHub → Actions → Docker → Production API
    ↓         ↓        ↓         ↓
   Code → Test → Build → Deploy → Monitor
+   ↑
+  DVC (Data Versioning)
 ```
 
 ## 📊 API Endpoints
@@ -40,12 +43,14 @@ GitHub → Actions → Docker → Production API
    ```bash
    git clone <repo-url>
    cd mlops-model-ci-cd
-   pip install -r requirements.txt
+   bash setup_env.sh
+   source .venv/Scripts/activate  # On Windows (Git Bash)
    ```
 
-2. **Train model**
+2. **Initialize Data Versioning (DVC)**
    ```bash
-   python -m src.train
+   dvc init
+   dvc repro  # Runs the training pipeline defined in dvc.yaml
    ```
 
 3. **Run tests**
@@ -76,20 +81,23 @@ docker build -t mlops-api .
 docker run -p 8000:8000 mlops-api
 ```
 
-## 📈 Model Registry
+## 📈 Data & Model Versioning (DVC)
 
-The system includes a custom model registry that:
+This project uses **DVC** to manage the machine learning pipeline and version control large files (like datasets and models) that shouldn't be in Git.
 
-- **Versions models** with timestamps
-- **Tracks metrics** (accuracy, test samples)
-- **Manages deployments** with automatic promotion
-- **Enables rollbacks** to previous versions
-- **Cross-platform compatibility** (Linux symlinks, Windows copy)
+- **`dvc.yaml`**: Defines the pipeline stages (e.g., training).
+- **`dvc.lock`**: Captures the exact versions of dependencies and outputs for reproducibility.
 
-### Model Deployment Logic
-- Models with accuracy > 90% are automatically deployed
-- Previous models remain available for rollback
-- Metadata stored in JSON format for easy inspection
+To reproduce the pipeline:
+```bash
+dvc repro
+```
+
+To track changes:
+```bash
+git add dvc.yaml dvc.lock
+git commit -m "Update pipeline"
+```
 
 ## 🔍 Monitoring & Observability
 
@@ -108,6 +116,7 @@ The system includes a custom model registry that:
 - **Unit Tests**: Individual component testing
 - **Integration Tests**: End-to-end API testing
 - **Model Tests**: Training pipeline validation
+- **DVC Tests**: Verifies data pipeline reproducibility
 - **CI/CD Tests**: Docker build and endpoint verification
 
 ## 🔄 CI/CD Pipeline
@@ -131,9 +140,12 @@ GitHub Actions workflow includes:
 │   └── model_registry.py # Model versioning system
 ├── tests/
 │   ├── test_app.py      # API tests
-│   └── test_model.py    # Model tests
-├── artifacts/           # Model storage
+│   ├── test_model.py    # Model tests
+│   └── test_dvc.py      # DVC pipeline tests
+├── artifacts/           # Model storage (ignored by git, tracked by DVC)
 ├── .github/workflows/   # CI/CD configuration
+├── dvc.yaml             # DVC pipeline definition
+├── dvc.lock             # DVC pipeline state
 ├── Dockerfile           # Container configuration
 ├── docker-compose.yml   # Local deployment
 └── requirements.txt     # Dependencies
