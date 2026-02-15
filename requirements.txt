@@ -8,3 +8,5 @@ httpx
 dvc
 prometheus-client
 mlflow
+pandas
+scipy
