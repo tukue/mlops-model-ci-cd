@@ -53,17 +53,47 @@ jobs:
         # Start API in background with MODEL_PATH env var
         export MODEL_PATH=/tmp/model.joblib
         uvicorn app.main:app --host 127.0.0.1 --port 8000 &
-        sleep 10
+        UVICORN_PID=$!
+
+        # Wait for API startup
+        STARTUP_SUCCESS=false
+        for i in {1..20}; do
+          if curl -sSf http://127.0.0.1:8000/health > /dev/null; then
+            STARTUP_SUCCESS=true
+            break
+          fi
+          sleep 1
+        done
+
+        if [ "$STARTUP_SUCCESS" = "false" ]; then
+          echo "API failed to start within timeout"
+          kill "$UVICORN_PID" 2>/dev/null || true
+          wait "$UVICORN_PID" 2>/dev/null || true
+          exit 1
+        fi
         
-        # Test endpoints
-        curl -f http://127.0.0.1:8000/
-        curl -f http://127.0.0.1:8000/health
-        curl -f http://127.0.0.1:8000/docs
+        # Test and validate endpoints
+        ROOT_JSON=$(curl -sSf http://127.0.0.1:8000/)
+        echo "$ROOT_JSON" | python -c 'import json,sys; data=json.load(sys.stdin); assert "/drift-status" in data["endpoints"]'
+
+        HEALTH_JSON=$(curl -sSf http://127.0.0.1:8000/health)
+        echo "$HEALTH_JSON" | python -c 'import json,sys; data=json.load(sys.stdin); assert data["status"] in ("ok","degraded"); assert "model_ready" in data'
+
+        curl -sSf http://127.0.0.1:8000/docs > /dev/null
+
+        METRICS_TEXT=$(curl -sSf http://127.0.0.1:8000/metrics)
+        echo "$METRICS_TEXT" | grep -q "api_request_duration_seconds"
+        echo "$METRICS_TEXT" | grep -q "process_memory_rss_bytes"
+        echo "$METRICS_TEXT" | grep -q "ml_drift_detected"
+
+        DRIFT_JSON=$(curl -sSf http://127.0.0.1:8000/drift-status)
+        echo "$DRIFT_JSON" | python -c 'import json,sys; data=json.load(sys.stdin); assert data["status"] in ("no_report","no_drift","drift_detected")'
         
         # Test prediction
-        curl -f -X POST http://127.0.0.1:8000/predict \
+        PREDICT_JSON=$(curl -sSf -X POST http://127.0.0.1:8000/predict \
           -H "Content-Type: application/json" \
-          -d '{"features": [5.1, 3.5, 1.4, 0.2]}'
+          -d '{"features": [5.1, 3.5, 1.4, 0.2]}')
+        echo "$PREDICT_JSON" | python -c 'import json,sys; data=json.load(sys.stdin); assert "prediction" in data'
         
         # Stop background process
-        pkill -f uvicorn
+        kill "$UVICORN_PID"
