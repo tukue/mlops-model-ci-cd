@@ -56,12 +56,21 @@ jobs:
         UVICORN_PID=$!
 
         # Wait for API startup
+        STARTUP_SUCCESS=false
         for i in {1..20}; do
           if curl -sSf http://127.0.0.1:8000/health > /dev/null; then
+            STARTUP_SUCCESS=true
             break
           fi
           sleep 1
         done
+
+        if [ "$STARTUP_SUCCESS" = "false" ]; then
+          echo "API failed to start within timeout"
+          kill "$UVICORN_PID" 2>/dev/null || true
+          wait "$UVICORN_PID" 2>/dev/null || true
+          exit 1
+        fi
         
         # Test and validate endpoints
         ROOT_JSON=$(curl -sSf http://127.0.0.1:8000/)

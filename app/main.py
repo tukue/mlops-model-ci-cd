@@ -82,7 +82,7 @@ def update_drift_metrics() -> None:
     try:
         with DRIFT_REPORT_PATH.open("r", encoding="utf-8") as report_file:
             report = json.load(report_file)
-    except Exception:
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
         logger.exception("failed_to_parse_drift_report path=%s", DRIFT_REPORT_PATH)
         DRIFT_DETECTED.set(0)
         DRIFTED_FEATURE_COUNT.set(0)
@@ -217,8 +217,9 @@ def predict(req: PredictRequest):
         except FileNotFoundError as e:
             PREDICTION_ERRORS.labels(reason="model_unavailable").inc()
             raise HTTPException(status_code=503, detail=str(e))
-        except Exception:
+        except (ValueError, TypeError, AttributeError, OSError) as exc:
             PREDICTION_ERRORS.labels(reason="inference_failure").inc()
+            logger.exception("prediction_inference_failed error=%s", exc.__class__.__name__)
             raise HTTPException(status_code=500, detail="Prediction failed due to internal error.")
 
 
@@ -232,7 +233,8 @@ def drift_status():
     try:
         with DRIFT_REPORT_PATH.open("r", encoding="utf-8") as report_file:
             report = json.load(report_file)
-    except Exception:
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        logger.exception("drift_report_parse_failed path=%s", DRIFT_REPORT_PATH)
         raise HTTPException(status_code=500, detail="Drift report exists but is not readable.")
 
     drift_detected = bool(report.get("drift_detected", False))
