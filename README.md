@@ -8,7 +8,7 @@ A production-ready MLOps system demonstrating end-to-end machine learning lifecy
 - **Data Versioning**: DVC (Data Version Control) for tracking data and model pipelines
 - **Model Versioning**: Custom registry with deployment logic and rollback capability
 - **Production API**: FastAPI with health checks, metrics, and error handling
-- **Monitoring**: Prometheus metrics for predictions, latency, and API requests
+- **Monitoring**: Prometheus metrics for latency, errors, model loading, drift, and resource utilization
 - **Containerization**: Docker support for consistent deployment
 - **Testing**: Comprehensive unit and integration tests
 
@@ -28,6 +28,7 @@ GitHub → Actions → Docker → Production API
 - `GET /health` - Health check for load balancers
 - `POST /predict` - Make predictions with model versioning
 - `GET /model-info` - Active model metadata and metrics
+- `GET /drift-status` - Latest drift detection summary from saved report
 - `GET /metrics` - Prometheus metrics for monitoring
 - `GET /docs` - Interactive API documentation
 
@@ -105,11 +106,17 @@ git commit -m "Update pipeline"
 - `ml_predictions_total` - Total predictions made
 - `ml_prediction_duration_seconds` - Prediction latency
 - `api_requests_total` - API requests by method/endpoint/status
+- `api_request_duration_seconds` - API latency by method/endpoint
+- `api_errors_total` - Unhandled API exceptions by route/type
+- `ml_prediction_errors_total` - Prediction failures by reason
+- `ml_model_load_total` and `ml_model_loaded` - Model load reliability and readiness
+- `process_memory_rss_bytes`, `process_cpu_percent`, `process_thread_count` - Runtime resource utilization
+- `ml_drift_detected`, `ml_drifted_feature_count` - Drift state from latest drift report
 
 ### Health Monitoring
-- `/health` endpoint for uptime checks
+- `/health` endpoint with readiness, uptime, and resource snapshot
 - Structured error handling with proper HTTP codes
-- Request tracking middleware
+- Request tracking middleware with per-request latency/error telemetry
 
 ## 🧪 Testing Strategy
 

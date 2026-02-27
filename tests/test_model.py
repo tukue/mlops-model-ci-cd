@@ -4,6 +4,7 @@ import mlflow
 from pathlib import Path
 from src.train import main, MODEL_PATH
 
+
 def test_training_script():
     """
     Test the training script execution.
@@ -14,13 +15,13 @@ def test_training_script():
     mlruns_dir = "mlruns_test_model"
     if os.path.exists(mlruns_dir):
         shutil.rmtree(mlruns_dir)
-    
+
     # Set tracking URI to local file system
     mlflow.set_tracking_uri(f"file:{os.path.abspath(mlruns_dir)}")
-    
+
     # Ensure the directory exists
     os.makedirs(mlruns_dir, exist_ok=True)
-    
+
     # Set the experiment to "Default" explicitly.
     # This creates it if it doesn't exist and sets it as active.
     mlflow.set_experiment("Default")
@@ -28,15 +29,15 @@ def test_training_script():
     # Clean up any existing model files
     if MODEL_PATH.exists():
         os.remove(MODEL_PATH)
-    
+
     try:
         # Run the training function
         main()
-        
+
         # Check that model was created
         assert MODEL_PATH.exists()
         assert MODEL_PATH.stat().st_size > 0
-        
+
     finally:
         # Cleanup
         if os.path.exists(mlruns_dir):
