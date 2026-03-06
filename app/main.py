@@ -9,7 +9,7 @@ import psutil
 import torch
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 
 from app.schemas import PredictRequest, PredictResponse
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
@@ -50,8 +50,8 @@ PROCESS_THREAD_COUNT = Gauge("process_thread_count", "Process thread count")
 API_INFLIGHT_REQUESTS = Gauge("api_inflight_requests", "Requests currently being processed")
 SERVICE_UPTIME_SECONDS = Gauge("service_uptime_seconds", "API process uptime in seconds")
 
-# Use a tiny model for CI and local testing
-DEFAULT_MODEL_NAME = "distilgpt2"
+# Use an instruction-tuned model for better chat-like responses
+DEFAULT_MODEL_NAME = "google/flan-t5-small"
 MODEL_NAME = os.environ.get("MODEL_NAME", DEFAULT_MODEL_NAME)
 MODEL_PATH = Path(os.environ.get("MODEL_PATH", Path(__file__).parent.parent / "artifacts" / "model"))
 
@@ -71,11 +71,10 @@ def get_model():
 
         try:
             _tokenizer = AutoTokenizer.from_pretrained(model_source)
-            _model = AutoModelForCausalLM.from_pretrained(model_source)
-            # Add a padding token if it doesn't exist
+            _model = AutoModelForSeq2SeqLM.from_pretrained(model_source)
+            # T5 doesn't need a pad token set manually, but good practice to check
             if _tokenizer.pad_token is None:
                 _tokenizer.pad_token = _tokenizer.eos_token
-                _model.config.pad_token_id = _model.config.eos_token_id
             MODEL_LOAD_COUNT.labels(status="success").inc()
             MODEL_LOADED.set(1)
             logger.info("model_loaded_successfully model_name=%s", model_source)
@@ -186,11 +185,9 @@ def predict(req: PredictRequest):
                     **inputs,
                     max_new_tokens=req.max_new_tokens,
                     temperature=req.temperature,
-                    pad_token_id=tokenizer.pad_token_id,
-                    do_sample=True,      # Enable sampling so temperature works
-                    top_k=50,            # Limit to top 50 probabilities
-                    top_p=0.95,          # Nucleus sampling
-                    repetition_penalty=1.2 # Discourage repeating the same text
+                    do_sample=True,
+                    top_k=50,
+                    top_p=0.95,
                 )
             
             generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
