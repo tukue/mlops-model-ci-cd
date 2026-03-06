@@ -20,6 +20,9 @@ on:
         required: true
         default: '2e-5'
 
+permissions:
+  contents: write
+
 jobs:
   train-llm:
     runs-on: ubuntu-latest
@@ -43,7 +46,7 @@ jobs:
       run: |
         dvc init --no-scm
         dvc remote add -d origin s3://your-dvc-bucket # Replace with your DVC remote
-        dvc pull # Pull any existing DVC-tracked data or models
+        dvc pull || echo "No existing DVC data found or remote not configured, continuing with fresh training"
 
     - name: Run LLM Fine-tuning
       run: |

@@ -33,11 +33,7 @@ jobs:
 
     - name: Run Tests (Unit, Integration)
       run: |
-        # Skip tests that might depend on the old model format for now
-        # or update them if they are critical. For now, we run pytest
-        # assuming tests are updated or we will update them next.
-        # If tests fail, we will fix them.
-        pytest tests/ -v || echo "Tests failed, but continuing to API smoke test for now"
+        pytest tests/ -v
 
     - name: Test Docker Build
       run: |

@@ -51,7 +51,7 @@ API_INFLIGHT_REQUESTS = Gauge("api_inflight_requests", "Requests currently being
 SERVICE_UPTIME_SECONDS = Gauge("service_uptime_seconds", "API process uptime in seconds")
 
 # Use a tiny model for CI and local testing
-DEFAULT_MODEL_NAME = "sshleifer/tiny-gpt2"
+DEFAULT_MODEL_NAME = "distilgpt2" # Changed from "sshleifer/tiny-gpt2"
 MODEL_NAME = os.environ.get("MODEL_NAME", DEFAULT_MODEL_NAME)
 MODEL_PATH = Path(os.environ.get("MODEL_PATH", Path(__file__).parent.parent / "artifacts" / "model"))
 
