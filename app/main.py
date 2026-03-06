@@ -9,9 +9,9 @@ import psutil
 import torch
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+from transformers import AutoTokenizer, AutoModelForCausalLM
 
-from app.schemas import PredictRequest, PredictResponse
+from app.schemas import PredictRequest, PredictResponse, FeedbackRequest
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 
 app = FastAPI(title="MLOps CI/CD API")
@@ -23,7 +23,7 @@ logging.basicConfig(
 PROCESS = psutil.Process(os.getpid())
 START_TIME = time.time()
 
-# Prometheus metrics
+# --- Prometheus Metrics ---
 PREDICTION_COUNT = Counter('ml_predictions_total', 'Total predictions made')
 PREDICTION_LATENCY = Histogram('ml_prediction_duration_seconds', 'Prediction latency')
 API_REQUESTS = Counter('api_requests_total', 'Total API requests', ['method', 'endpoint', 'status'])
@@ -49,9 +49,13 @@ PROCESS_CPU_PERCENT = Gauge("process_cpu_percent", "Process CPU usage percent")
 PROCESS_THREAD_COUNT = Gauge("process_thread_count", "Process thread count")
 API_INFLIGHT_REQUESTS = Gauge("api_inflight_requests", "Requests currently being processed")
 SERVICE_UPTIME_SECONDS = Gauge("service_uptime_seconds", "API process uptime in seconds")
+PROMPT_TOKENS = Histogram('llm_prompt_tokens_total', 'Number of tokens in the prompt')
+GENERATED_TOKENS = Histogram('llm_generated_tokens_total', 'Number of tokens in the generated response')
+RESPONSE_QUALITY_SCORE = Histogram('llm_response_quality_score', 'User feedback score for response quality')
+SAFETY_FLAG_COUNT = Counter('llm_safety_flag_total', 'Count of responses flagged for safety issues', ['flag_type'])
 
-# Use an instruction-tuned model for better chat-like responses
-DEFAULT_MODEL_NAME = "google/flan-t5-small"
+# --- Model Loading ---
+DEFAULT_MODEL_NAME = "microsoft/phi-2"
 MODEL_NAME = os.environ.get("MODEL_NAME", DEFAULT_MODEL_NAME)
 MODEL_PATH = Path(os.environ.get("MODEL_PATH", Path(__file__).parent.parent / "artifacts" / "model"))
 
@@ -70,11 +74,12 @@ def get_model():
             model_source = MODEL_NAME
 
         try:
-            _tokenizer = AutoTokenizer.from_pretrained(model_source)
-            _model = AutoModelForSeq2SeqLM.from_pretrained(model_source)
-            # T5 doesn't need a pad token set manually, but good practice to check
+            _tokenizer = AutoTokenizer.from_pretrained(model_source, trust_remote_code=True)
+            _model = AutoModelForCausalLM.from_pretrained(model_source, trust_remote_code=True, torch_dtype="auto")
+            
             if _tokenizer.pad_token is None:
                 _tokenizer.pad_token = _tokenizer.eos_token
+            
             MODEL_LOAD_COUNT.labels(status="success").inc()
             MODEL_LOADED.set(1)
             logger.info("model_loaded_successfully model_name=%s", model_source)
@@ -85,6 +90,7 @@ def get_model():
             raise
     return _tokenizer, _model
 
+# --- Middleware & Resource Metrics ---
 def update_resource_metrics() -> None:
     PROCESS_MEMORY_RSS_BYTES.set(PROCESS.memory_info().rss)
     PROCESS_CPU_PERCENT.set(PROCESS.cpu_percent(interval=None))
@@ -94,6 +100,7 @@ def update_resource_metrics() -> None:
 @app.middleware("http")
 async def track_requests(request: Request, call_next):
     request_id = str(uuid.uuid4())
+    request.state.request_id = request_id
     start_time = time.perf_counter()
     status_code = 500
     API_INFLIGHT_REQUESTS.inc()
@@ -137,6 +144,7 @@ async def track_requests(request: Request, call_next):
             duration_seconds * 1000,
         )
 
+# --- API Endpoints ---
 @app.on_event("startup")
 def startup_event():
     try:
@@ -149,7 +157,7 @@ def root():
     return {
         "message": "MLOps API is running",
         "model_name": MODEL_NAME,
-        "endpoints": ["/health", "/predict", "/metrics", "/docs"],
+        "endpoints": ["/health", "/predict", "/metrics", "/feedback", "/docs"],
     }
 
 @app.get("/health")
@@ -161,11 +169,6 @@ def health():
         "model_ready": model_ready,
         "model_name": MODEL_NAME,
         "uptime_seconds": round(time.time() - START_TIME, 3),
-        "resource_usage": {
-            "memory_rss_bytes": int(PROCESS.memory_info().rss),
-            "cpu_percent": float(PROCESS.cpu_percent(interval=None)),
-            "thread_count": int(PROCESS.num_threads()),
-        },
     }
 
 @app.get("/metrics")
@@ -174,7 +177,7 @@ def metrics():
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 @app.post("/predict", response_model=PredictResponse)
-def predict(req: PredictRequest):
+def predict(req: PredictRequest, request: Request):
     with PREDICTION_LATENCY.time():
         try:
             tokenizer, model = get_model()
@@ -185,20 +188,47 @@ def predict(req: PredictRequest):
                     **inputs,
                     max_new_tokens=req.max_new_tokens,
                     temperature=req.temperature,
+                    pad_token_id=tokenizer.pad_token_id,
                     do_sample=True,
                     top_k=50,
                     top_p=0.95,
+                    repetition_penalty=1.2
                 )
             
-            generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
+            input_length = inputs.input_ids.shape[1]
+            generated_tokens = outputs[0][input_length:]
+            generated_text = tokenizer.decode(generated_tokens, skip_special_tokens=True)
+            
+            PROMPT_TOKENS.observe(input_length)
+            GENERATED_TOKENS.observe(len(generated_tokens))
+            
+            if "unsafe_word" in generated_text.lower():
+                SAFETY_FLAG_COUNT.labels(flag_type="profanity").inc()
+                logger.warning("safety_flag_triggered request_id=%s", request.state.request_id)
+
             PREDICTION_COUNT.inc()
             
-            return PredictResponse(generated_text=generated_text, model_version=MODEL_NAME)
+            return PredictResponse(
+                request_id=request.state.request_id,
+                generated_text=generated_text,
+                model_version=MODEL_NAME
+            )
         
         except Exception as e:
             PREDICTION_ERRORS.labels(reason="inference_failure").inc()
             logger.exception("prediction_inference_failed error=%s", e.__class__.__name__)
             raise HTTPException(status_code=500, detail="Prediction failed due to internal error.")
+
+@app.post("/feedback")
+def feedback(req: FeedbackRequest):
+    RESPONSE_QUALITY_SCORE.observe(req.score)
+    logger.info(
+        "feedback_received request_id=%s score=%d comment=%s",
+        req.request_id,
+        req.score,
+        req.comment,
+    )
+    return {"status": "ok", "message": "Feedback received, thank you!"}
 
 @app.get("/favicon.ico", include_in_schema=False)
 async def favicon():

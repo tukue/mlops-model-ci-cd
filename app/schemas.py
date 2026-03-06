@@ -10,14 +10,20 @@ class PredictRequest(BaseModel):
         "json_schema_extra": {
             "examples": [
                 {
-                    "prompt": "Write one sentence about cloud engineering.",
+                    "prompt": "Define Minimum viable product about ecommerce saas.",
                     "max_new_tokens": 50,
-                    "temperature": 0.8,
+                    "temperature": 0.5,
                 }
             ]
         }
     }
 
 class PredictResponse(BaseModel):
+    request_id: str
     generated_text: str
     model_version: Optional[str] = None
+
+class FeedbackRequest(BaseModel):
+    request_id: str
+    score: int = Field(..., ge=1, le=5, description="User feedback score (1-5)")
+    comment: Optional[str] = None
