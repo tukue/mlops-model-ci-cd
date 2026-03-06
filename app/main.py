@@ -5,16 +5,16 @@ import time
 import uuid
 from pathlib import Path
 
-import joblib
 import psutil
+import torch
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
+from transformers import AutoTokenizer, AutoModelForCausalLM
+
 from app.schemas import PredictRequest, PredictResponse
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
-from src.model_registry import ModelRegistry
-from src.detect_drift import DRIFT_REPORT_PATH
 
-app = FastAPI(title="MLOps ci-cd API")
+app = FastAPI(title="MLOps CI/CD API")
 logger = logging.getLogger("mlops_api")
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -42,77 +42,55 @@ PREDICTION_ERRORS = Counter(
     "Prediction failures",
     ["reason"],
 )
-PREDICTION_CLASS_COUNT = Counter(
-    "ml_prediction_class_total",
-    "Predicted class distribution",
-    ["prediction_class"],
-)
 MODEL_LOAD_COUNT = Counter("ml_model_load_total", "Model load attempts", ["status"])
 MODEL_LOADED = Gauge("ml_model_loaded", "Model load status: 1=loaded, 0=not loaded")
 PROCESS_MEMORY_RSS_BYTES = Gauge("process_memory_rss_bytes", "Process resident memory in bytes")
 PROCESS_CPU_PERCENT = Gauge("process_cpu_percent", "Process CPU usage percent")
 PROCESS_THREAD_COUNT = Gauge("process_thread_count", "Process thread count")
 API_INFLIGHT_REQUESTS = Gauge("api_inflight_requests", "Requests currently being processed")
-DRIFT_DETECTED = Gauge("ml_drift_detected", "Drift flag from latest drift report (1=true, 0=false)")
-DRIFTED_FEATURE_COUNT = Gauge("ml_drifted_feature_count", "Count of features drifting in latest report")
 SERVICE_UPTIME_SECONDS = Gauge("service_uptime_seconds", "API process uptime in seconds")
 
-# Use absolute path relative to project root
-# Check for an environment variable first, otherwise fall back to the default path.
-# This makes the model path configurable, which is great for CI/CD and production.
-MODEL_PATH = Path(os.environ.get("MODEL_PATH", Path(__file__).parent.parent / "artifacts" / "model.joblib"))
+# Use a tiny model for CI and local testing
+DEFAULT_MODEL_NAME = "distilgpt2" # Changed from "sshleifer/tiny-gpt2"
+MODEL_NAME = os.environ.get("MODEL_NAME", DEFAULT_MODEL_NAME)
+MODEL_PATH = Path(os.environ.get("MODEL_PATH", Path(__file__).parent.parent / "artifacts" / "model"))
 
+_tokenizer = None
 _model = None
-_model_version = None
 
+def get_model():
+    global _tokenizer, _model
+    if _model is None or _tokenizer is None:
+        model_path_str = str(MODEL_PATH)
+        if MODEL_PATH.exists():
+            logger.info("loading_model_from_path path=%s", model_path_str)
+            model_source = model_path_str
+        else:
+            logger.info("loading_model_from_hub model_name=%s", MODEL_NAME)
+            model_source = MODEL_NAME
+
+        try:
+            _tokenizer = AutoTokenizer.from_pretrained(model_source)
+            _model = AutoModelForCausalLM.from_pretrained(model_source)
+            # Add a padding token if it doesn't exist
+            if _tokenizer.pad_token is None:
+                _tokenizer.pad_token = _tokenizer.eos_token
+                _model.config.pad_token_id = _model.config.eos_token_id
+            MODEL_LOAD_COUNT.labels(status="success").inc()
+            MODEL_LOADED.set(1)
+            logger.info("model_loaded_successfully model_name=%s", model_source)
+        except Exception:
+            MODEL_LOAD_COUNT.labels(status="failure").inc()
+            MODEL_LOADED.set(0)
+            logger.exception("failed_to_load_model model_name=%s", model_source)
+            raise
+    return _tokenizer, _model
 
 def update_resource_metrics() -> None:
     PROCESS_MEMORY_RSS_BYTES.set(PROCESS.memory_info().rss)
     PROCESS_CPU_PERCENT.set(PROCESS.cpu_percent(interval=None))
     PROCESS_THREAD_COUNT.set(PROCESS.num_threads())
     SERVICE_UPTIME_SECONDS.set(time.time() - START_TIME)
-
-
-def update_drift_metrics() -> None:
-    if not DRIFT_REPORT_PATH.exists():
-        DRIFT_DETECTED.set(0)
-        DRIFTED_FEATURE_COUNT.set(0)
-        return
-
-    try:
-        with DRIFT_REPORT_PATH.open("r", encoding="utf-8") as report_file:
-            report = json.load(report_file)
-    except (OSError, json.JSONDecodeError, TypeError, ValueError):
-        logger.exception("failed_to_parse_drift_report path=%s", DRIFT_REPORT_PATH)
-        DRIFT_DETECTED.set(0)
-        DRIFTED_FEATURE_COUNT.set(0)
-        return
-
-    drift_detected = bool(report.get("drift_detected", False))
-    drifted_features = report.get("drifted_features", {})
-    DRIFT_DETECTED.set(1 if drift_detected else 0)
-    DRIFTED_FEATURE_COUNT.set(len(drifted_features))
-
-
-def get_model():
-    global _model, _model_version
-    if _model is None:
-        if not MODEL_PATH.exists():
-            MODEL_LOAD_COUNT.labels(status="failure").inc()
-            MODEL_LOADED.set(0)
-            raise FileNotFoundError(
-                f"Model not found at {MODEL_PATH}. Train it first or check MODEL_PATH env var."
-            )
-        try:
-            _model = joblib.load(MODEL_PATH)
-            _model_version = f"mtime_{int(MODEL_PATH.stat().st_mtime)}"
-            MODEL_LOAD_COUNT.labels(status="success").inc()
-            MODEL_LOADED.set(1)
-        except Exception:
-            MODEL_LOAD_COUNT.labels(status="failure").inc()
-            MODEL_LOADED.set(0)
-            raise
-    return _model, _model_version
 
 @app.middleware("http")
 async def track_requests(request: Request, call_next):
@@ -160,21 +138,29 @@ async def track_requests(request: Request, call_next):
             duration_seconds * 1000,
         )
 
+@app.on_event("startup")
+def startup_event():
+    try:
+        get_model()
+    except Exception:
+        logger.critical("could_not_load_model_on_startup")
+
 @app.get("/")
 def root():
     return {
         "message": "MLOps API is running",
-        "endpoints": ["/health", "/predict", "/metrics", "/model-info", "/drift-status", "/docs"],
+        "model_name": MODEL_NAME,
+        "endpoints": ["/health", "/predict", "/metrics", "/docs"],
     }
 
 @app.get("/health")
 def health():
     update_resource_metrics()
-    model_ready = MODEL_PATH.exists()
+    model_ready = _model is not None and _tokenizer is not None
     return {
         "status": "ok" if model_ready else "degraded",
         "model_ready": model_ready,
-        "model_path": str(MODEL_PATH),
+        "model_name": MODEL_NAME,
         "uptime_seconds": round(time.time() - START_TIME, 3),
         "resource_usage": {
             "memory_rss_bytes": int(PROCESS.memory_info().rss),
@@ -183,71 +169,35 @@ def health():
         },
     }
 
-@app.get("/model-info")
-def model_info():
-    try:
-        registry = ModelRegistry()
-        version, _ = registry.get_active_model()
-        metadata = registry.list_models()
-        if version and version in metadata:
-            return {
-                "active_version": version,
-                "created_at": metadata[version]["created_at"],
-                "metrics": metadata[version]["metrics"]
-            }
-        return {"error": "No active model found"}
-    except Exception as e:
-        return {"error": str(e)}
-
 @app.get("/metrics")
 def metrics():
     update_resource_metrics()
-    update_drift_metrics()
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 @app.post("/predict", response_model=PredictResponse)
 def predict(req: PredictRequest):
     with PREDICTION_LATENCY.time():
         try:
-            model, version = get_model()
-            pred = int(model.predict([req.features])[0])
+            tokenizer, model = get_model()
+            inputs = tokenizer(req.prompt, return_tensors="pt", padding=True, truncation=True)
+            
+            with torch.no_grad():
+                outputs = model.generate(
+                    **inputs,
+                    max_new_tokens=req.max_new_tokens,
+                    temperature=req.temperature,
+                    pad_token_id=tokenizer.pad_token_id,
+                )
+            
+            generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
             PREDICTION_COUNT.inc()
-            PREDICTION_CLASS_COUNT.labels(prediction_class=str(pred)).inc()
-            return PredictResponse(prediction=pred, model_version=version)
-        except FileNotFoundError as e:
-            PREDICTION_ERRORS.labels(reason="model_unavailable").inc()
-            raise HTTPException(status_code=503, detail=str(e))
-        except (ValueError, TypeError, AttributeError, OSError) as exc:
+            
+            return PredictResponse(generated_text=generated_text, model_version=MODEL_NAME)
+        
+        except Exception as e:
             PREDICTION_ERRORS.labels(reason="inference_failure").inc()
-            logger.exception("prediction_inference_failed error=%s", exc.__class__.__name__)
+            logger.exception("prediction_inference_failed error=%s", e.__class__.__name__)
             raise HTTPException(status_code=500, detail="Prediction failed due to internal error.")
-
-
-@app.get("/drift-status")
-def drift_status():
-    if not DRIFT_REPORT_PATH.exists():
-        DRIFT_DETECTED.set(0)
-        DRIFTED_FEATURE_COUNT.set(0)
-        return {"status": "no_report", "report_path": str(DRIFT_REPORT_PATH)}
-
-    try:
-        with DRIFT_REPORT_PATH.open("r", encoding="utf-8") as report_file:
-            report = json.load(report_file)
-    except (OSError, json.JSONDecodeError, TypeError, ValueError):
-        logger.exception("drift_report_parse_failed path=%s", DRIFT_REPORT_PATH)
-        raise HTTPException(status_code=500, detail="Drift report exists but is not readable.")
-
-    drift_detected = bool(report.get("drift_detected", False))
-    drifted_features = report.get("drifted_features", {})
-    DRIFT_DETECTED.set(1 if drift_detected else 0)
-    DRIFTED_FEATURE_COUNT.set(len(drifted_features))
-
-    return {
-        "status": "drift_detected" if drift_detected else "no_drift",
-        "drift_detected": drift_detected,
-        "drifted_features": list(drifted_features.keys()),
-        "report_path": str(DRIFT_REPORT_PATH),
-    }
 
 @app.get("/favicon.ico", include_in_schema=False)
 async def favicon():

@@ -20,9 +20,12 @@ build/
 dist/
 
 # DVC
+.dvc/
 .dvc/cache
 .dvc/tmp
+dvc.lock
 
 # MLflow
 mlruns/
+mlflow.db
 .trash/

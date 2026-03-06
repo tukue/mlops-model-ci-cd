@@ -1,13 +1,14 @@
 fastapi
 uvicorn[standard]
-scikit-learn
-joblib
 pydantic
 pytest
-httpx<0.28
+httpx
 dvc
 prometheus-client
 mlflow
 pandas
 scipy
 psutil
+transformers==4.35.0
+torch==2.1.0
+numpy<2

@@ -1,172 +1,153 @@
-# LLM Migration Plan: Adapting for Open-Source Hugging Face LLMs
+# LLM Migration Plan: From Classical ML to Transformer-Based Workflows
 
-This document outlines the necessary changes to adapt the current MLOps repository for training and deploying open-source Hugging Face Large Language Models (LLMs).
+This document outlines the strategy and concrete steps for refactoring this MLOps repository from a classical machine learning setup (scikit-learn, joblib) to a modern, LLM-based workflow using Hugging Face Transformers.
 
-## 1. Feasibility Analysis (Open-Source Tooling)
-
-A primary consideration is whether this migration is feasible using only open-source tools.
-
-**Conclusion: Highly Feasible, with caveats on hardware.**
-
-The open-source ecosystem for MLOps with LLMs is mature and robust. We can achieve a full end-to-end pipeline without relying on proprietary software. The main challenge is not the availability of tools, but the management of computational resources (GPU, RAM).
-
-### Open-Source Toolchain Breakdown:
-
-| Stage | Task | Open-Source Tools | Feasibility Notes |
-|---|---|---|---|
-| **Data Management** | Versioning large text datasets | `DVC`, `Git LFS` | Excellent. DVC is already in use. Git LFS is a good alternative for very large files. |
-| | Data Processing/Tokenization | `Hugging Face datasets`, `Pandas` | Excellent. `datasets` is highly optimized for large text corpora and memory-mapping. |
-| **Experiment Tracking** | Logging metrics, params, artifacts | `MLflow` | Excellent. MLflow is already in use and integrates well with `transformers`. |
-| **Model Training** | Fine-tuning LLMs | `Hugging Face transformers`, `PEFT`, `accelerate`, `PyTorch` | Excellent. This stack is the de-facto standard for open-source LLM training. |
-| | Distributed Training | `DeepSpeed` (via `accelerate`), `FSDP` | Good. Requires more complex setup but is well-documented. |
-| **CI/CD** | Pipeline Automation | `GitHub Actions` / `GitLab CI` | Excellent. Already in use. The main challenge is getting access to GPU runners if needed for CI-based training/testing. |
-| **Model Serving** | API for inference | `FastAPI`, `vLLM`, `TGI` | Good. FastAPI is a solid baseline. For high-throughput/low-latency, `vLLM` or Hugging Face's `text-generation-inference` (TGI) are state-of-the-art. |
-| **Model Monitoring** | Drift, performance | `Prometheus`, `Grafana`, `Evidently AI` | Good. Prometheus is already in use. `Evidently AI` provides excellent open-source support for data and model drift detection. |
-
-### Technical Feasibility on a Laptop
-
-Developing an LLM MLOps pipeline on a standard laptop is **feasible for code development and pipeline orchestration, but not for full-scale training or production-grade serving.**
-
-**What IS Feasible on a Laptop:**
-*   **Pipeline Development**: You can write and test the entire MLOps workflow code:
-    *   Data processing scripts (using sampled data).
-    *   `train.py` script logic.
-    *   `app/main.py` for the serving API.
-    *   `dvc.yaml` stages.
-    *   `.github/workflows/ci-cd.yaml` for automation.
-*   **Unit & Integration Testing**: Write `pytest` tests for all components. You can use mock objects or a "dummy" model in place of a real LLM to test the logic.
-*   **Training on Tiny Models**: It is possible to fine-tune very small LLMs (e.g., `distilbert`, `TinyLlama`) on a CPU or a laptop GPU (if available) to verify the training script works.
-*   **Inference with Small Models**: Running inference with these same tiny models in the FastAPI application is also feasible.
-
-**What is NOT Feasible on a Laptop:**
-*   **Training Large Models**: Fine-tuning models like Llama 7B, even with QLoRA, is practically impossible on a typical laptop. It requires a dedicated GPU with significant VRAM (e.g., 16-24GB+) and will be extremely slow without it.
-*   **Serving Large Models**: Running inference for a 7B model requires a large amount of RAM and CPU, leading to very slow response times that are not suitable for a real application.
-*   **Meaningful Evaluation**: Proper evaluation requires running the model on a substantial test set, which is computationally expensive.
-
-**Strategy**: The recommended approach is to use the laptop for developing and debugging the pipeline with small, sampled data and mock/tiny models. The full pipeline can then be executed on a cloud-based GPU instance for the actual training, evaluation, and deployment.
+The core philosophy is to enable rapid, reliable, and resource-efficient development suitable for both local laptops and CI/CD environments like GitHub Actions.
 
 ---
 
-## 2. Phase 1: Lightweight LLM Pilot
+## 1. Keep GitHub Actions for CI, but Make it Inference-First
 
-To validate the MLOps pipeline without heavy resource requirements, we will start with a "Lightweight LLM Pilot".
+The CI pipeline should be fast, lightweight, and focused on validation, not on expensive training.
 
-**Goal**: Establish a working end-to-end pipeline (Data -> Train -> Track -> Serve) using a small, open-source LLM that can run on a standard laptop or free-tier cloud instance (e.g., Google Colab).
+**Use PR CI to verify:**
+- Dependencies install correctly (`pip install`).
+- The tokenizer and a tiny model can be loaded from Hugging Face or a local path.
+- The FastAPI application starts without errors.
+- The `/health` endpoint returns a `200 OK` status.
+- The `/predict` endpoint accepts a text prompt and returns a non-empty text response.
+- The Docker image builds successfully.
 
-**Selected Model Candidates:**
-*   **`TinyLlama/TinyLlama-1.1B-Chat-v1.0`**: A 1.1B parameter model. Small enough for experimentation but capable of chat.
-*   **`facebook/opt-125m`**: A very small (125M parameter) model. Excellent for testing pipeline mechanics (training loop, logging, saving) even if the output quality is low.
-*   **`distilgpt2`**: A distilled version of GPT-2 (82M parameters). Very fast and lightweight.
+For this, we will use a tiny Hugging Face model such as **`sshleifer/tiny-gpt2`** or **`distilgpt2`** both locally and in CI. This ensures that the pipeline logic is sound without requiring powerful hardware.
 
-**Pilot Workflow:**
-1.  **Data**: Use a small subset (e.g., 1000 samples) of a public dataset like `imdb` (sentiment analysis) or `databricks/databricks-dolly-15k` (instruction tuning).
-2.  **Training**:
-    *   Fine-tune the selected model for a specific task (e.g., causal language modeling or sequence classification).
-    *   Use `LoRA` (Low-Rank Adaptation) to further reduce memory usage.
-    *   Run for a small number of epochs (e.g., 1-3) to verify the process completes.
-3.  **Tracking**: Ensure loss curves, learning rate, and system metrics are logged to MLflow.
-4.  **Serving**: Deploy the fine-tuned model using FastAPI. Verify it can accept a text prompt and return a text response.
+**The PR pipeline becomes:**
+`push / PR` → `install dependencies` → `load tiny model` → `run tests` → `build Docker image` → `smoke test API`
 
-**Success Criteria:**
-*   `train.py` runs successfully without OOM (Out of Memory) errors.
-*   Model artifacts (adapter weights, config) are saved to the `artifacts/` directory.
-*   MLflow experiment shows a completed run with metrics.
-*   The API endpoint `/predict` returns a valid JSON response with generated text.
+This workflow is realistic on a standard laptop and on free GitHub-hosted runners.
+
+## 2. Do Not Retrain in Every PR
+
+The current `dvc repro` flow is designed for classical models where retraining is fast. With LLMs, even small fine-tuning jobs are computationally heavy and slow.
+
+We will adopt two distinct workflows:
+
+**Workflow A: `ci.yml`**
+- **Trigger**: Runs on every push and pull request.
+- **Purpose**: Verifies the integrity and functionality of the application.
+- **Jobs**:
+  - Linting and static analysis.
+  - Unit and integration tests.
+  - Building the application (e.g., Docker image).
+  - Starting the API with a tiny, fixed model.
+  - Smoke testing critical endpoints (`/health`, `/predict`).
+
+**Workflow B: `train-llm.yml`**
+- **Trigger**: Runs only on manual dispatch (`workflow_dispatch`), on a schedule, or on a protected branch merge.
+- **Purpose**: To execute the actual model fine-tuning process.
+- **Jobs**:
+  - Pulling the full dataset from a remote source (like DVC).
+  - Running the fine-tuning script (`train.py`).
+  - Evaluating the model and logging metrics to MLflow.
+  - Versioning and pushing the trained model artifact (e.g., LoRA adapters) to a registry or DVC remote.
+
+This separation is the single most important change for achieving a practical LLM MLOps cycle.
+
+## 3. Fine-Tune with LoRA, Not Full-Model Training
+
+When training is required, we will use Parameter-Efficient Fine-Tuning (PEFT), specifically **LoRA (Low-Rank Adaptation)**. This approach significantly reduces the computational burden of fine-tuning.
+
+**Benefits for this project:**
+- **Frozen Base Model**: The large pre-trained model's weights remain unchanged.
+- **Trainable Adapters**: Only a small number of new parameters (the LoRA adapter weights) are trained.
+- **Small Artifacts**: The resulting artifacts are typically only a few megabytes, making them easy to store and manage.
+- **Laptop-Friendly**: LoRA makes fine-tuning on a local machine with a consumer GPU a realistic goal.
+
+This is the sweet spot for portfolio-level practice, demonstrating modern LLM training techniques without requiring an enterprise-level budget.
+
+## 4. Train Locally, Validate in GitHub
+
+The recommended development loop is:
+
+1.  **Laptop**: Run the actual fine-tuning script on a small, representative dataset to produce a model artifact (e.g., LoRA adapters).
+2.  **Git**: Push the code changes, updated DVC metadata, and any relevant configuration.
+3.  **GitHub Actions**: The CI pipeline automatically runs, but it **does not re-train**. Instead, it validates that the new code works and that a model artifact (even a mock one) can be loaded and served correctly.
+
+This gives us real CI/CD practice without depending on expensive, GPU-powered runners.
+
+## 5. Keep DVC for Reproducibility, Not Heavy CI
+
+DVC remains a valuable tool for tracking experiments and ensuring reproducibility. However, we will avoid running `dvc repro` in the main CI pipeline if it triggers a full training run.
+
+**How we will use DVC:**
+- Track the dataset samples used for local training.
+- Track the tokenized or prepared datasets.
+- Track the final model/adapter artifacts.
+- Keep `params.yaml` for defining hyperparameters like the base model name, epochs, batch size, and max sequence length.
+
+In the GitHub PR CI, we will either run a mock/lightweight DVC stage or pull a pre-produced small artifact to test the application.
+
+## 6. Start with One Tiny LLM Use Case
+
+Instead of complex tasks like RAG or building a chat assistant, we will begin with a simple, well-defined task like **prompt completion**.
+
+- **Input**: `{"prompt": "Write one sentence about cloud engineering."}`
+- **Output**: `{"generated_text": "..."}`
+
+This allows us to refactor the current `/predict` endpoint from handling numeric features to handling text with minimal disruption.
+
+## 7. Change the API Contract Early
+
+The API contract defined in `app/schemas.py` will be updated to reflect the new LLM-centric approach.
+
+**New `PredictRequest` schema:**
+- `prompt` (string)
+- `max_new_tokens` (integer)
+- `temperature` (float, optional)
+
+**New `PredictResponse` schema:**
+- `generated_text` (string)
+- `model_version` (string)
+
+The CI smoke test will then only need to verify that the API returns a `200 OK` response with a non-empty `generated_text` field.
+
+## 8. Recommended Stack for a Constrained Environment
+
+Given the constraints of a laptop and free GitHub Actions runners, the recommended stack is:
+
+- **Model**: Start with `distilgpt2`, then move to a small LoRA-tuned model.
+- **Training Approach**: Inference-first, with LoRA-based fine-tuning performed manually or locally.
+- **Serving**: FastAPI.
+- **CI/CD**: GitHub Actions.
+- **Artifacts**: DVC-tracked outputs stored in a cloud bucket (e.g., S3, GCS).
+- **Experiment Tracking**: MLflow (already integrated).
+
+This stack is powerful enough to demonstrate a complete MLOps cycle while remaining manageable and cost-effective.
 
 ---
 
-## 3. Dependency Updates (`requirements.txt`)
+## Implemented Changes Summary
 
-The existing `requirements.txt` is tailored for traditional ML models. We need to add libraries essential for Hugging Face LLMs and deep learning.
+The following recommendations have been successfully implemented:
 
-**Proposed Changes:**
-*   Add `transformers`: Core Hugging Face library for models and tokenizers.
-*   Add `datasets`: For efficient handling and loading of large text datasets.
-*   Add `accelerate`: For simplified distributed training and mixed-precision training.
-*   Add `peft`: Parameter-Efficient Fine-tuning (e.g., LoRA, QLoRA) for efficient LLM fine-tuning.
-*   Add `bitsandbytes`: For 8-bit quantization, enabling training of larger models on consumer GPUs.
-*   Add `torch`: The underlying deep learning framework.
-*   Add `vllm` (Optional, for high-performance serving).
-*   Add `evidently` (For LLM monitoring).
-
-## 4. Data Preparation Workflow
-
-The current DVC-based data pipeline needs to be adapted for text data and LLM-specific preprocessing.
-
-**Proposed Changes:**
-*   **Data Ingestion**: Update scripts to ingest large text corpora.
-*   **Text Preprocessing**:
-    *   Tokenization using Hugging Face `AutoTokenizer`.
-    *   Handling of special tokens (padding, EOS, BOS).
-    *   Creation of input IDs, attention masks, and labels.
-*   **Dataset Creation**: Utilize `datasets` library for efficient loading and batching.
-*   **DVC Integration**: Ensure DVC tracks raw text data, preprocessed datasets, and tokenizer configurations.
-
-## 5. Model Training Script (`train.py`)
-
-The `train.py` script will require significant modifications to accommodate LLM fine-tuning.
-
-**Proposed Changes:**
-*   **Model Loading**: Load pre-trained LLMs using `AutoModelForCausalLM` or `AutoModelForSequenceClassification` (depending on task) from `transformers`.
-*   **Tokenizer Loading**: Load corresponding tokenizer using `AutoTokenizer`.
-*   **Fine-tuning Strategy**:
-    *   Implement LoRA/QLoRA using `peft` for efficient fine-tuning.
-    *   Configure `TrainingArguments` and `Trainer` from `transformers` for training loop management.
-*   **Distributed Training**: Leverage `accelerate` for multi-GPU or multi-node training.
-*   **Hyperparameter Management**: Adapt for LLM-specific hyperparameters (e.g., learning rate schedulers, gradient accumulation steps).
-*   **MLflow Tracking**:
-    *   Log LLM-specific metrics (e.g., perplexity, ROUGE, BLEU).
-    *   Log model artifacts (model weights, tokenizer, `peft` adapters).
-
-## 6. Model Evaluation
-
-Evaluation metrics and procedures need to be updated for LLMs.
-
-**Proposed Changes:**
-*   **Quantitative Metrics**: Implement metrics like perplexity, ROUGE, BLEU, or task-specific metrics (e.g., F1 for classification, exact match for QA).
-*   **Human Evaluation**: Consider integrating a workflow for human evaluation, especially for generative tasks.
-*   **MLflow Logging**: Log all evaluation results and potentially example generations.
-
-## 7. Model Serving (`app/main.py`, `schemas.py`, `Dockerfile`)
-
-The serving component needs to handle LLM inference, which can be resource-intensive.
-
-**Proposed Changes:**
-*   **Model Loading**: Load the fine-tuned LLM and tokenizer. If using PEFT, load the base model and then attach the PEFT adapters.
-*   **Inference Endpoint**:
-    *   Create a FastAPI endpoint for text generation or other LLM tasks.
-    *   Handle input prompts and output generations.
-*   **Optimization**:
-    *   Implement efficient inference techniques (e.g., `torch.bfloat16`, `torch.compile`, quantization).
-    *   Consider using specialized serving frameworks like vLLM or TGI if performance is critical.
-*   **`schemas.py`**: Update Pydantic schemas for LLM inputs (e.g., `prompt`, `max_new_tokens`, `temperature`) and outputs (e.g., `generated_text`).
-*   **`Dockerfile`**: Ensure the Dockerfile includes all necessary dependencies (GPU drivers if applicable), and optimizes for LLM serving (e.g., larger memory limits).
-
-## 8. CI/CD Pipeline (`.github/workflows/`, `dvc.yaml`)
-
-The CI/CD pipeline needs to be updated to reflect the new training and deployment workflow.
-
-**Proposed Changes:**
-*   **`dvc.yaml`**: Update DVC stages for LLM data preprocessing, training, and model packaging.
-*   **GitHub Actions/GitLab CI/CD**:
-    *   Add steps for installing LLM-specific dependencies.
-    *   Configure jobs to run on GPU-enabled runners if training in CI/CD.
-    *   Update deployment steps to push LLM models to a model registry (e.g., MLflow Model Registry, Hugging Face Hub).
-    *   Integrate model monitoring checks.
-
-## 9. Infrastructure Considerations
-
-LLMs require substantial computational resources.
-
-**Proposed Changes:**
-*   **GPU Resources**: Ensure access to powerful GPUs for training and efficient inference.
-*   **Memory**: Plan for increased memory requirements for both training and serving.
-*   **Distributed Systems**: Consider Kubernetes or other orchestration tools for scalable deployment.
-
-## Next Steps
-
-1.  **Create a new branch**: `git checkout -b feature/llm-migration`
-2.  **Update `requirements.txt`**: Add the necessary LLM libraries.
-3.  **Start with data preparation**: Adapt existing data scripts or create new ones for text data.
-4.  **Develop a basic fine-tuning script**: Get a simple LLM fine-tuning process working.
-5.  **Iteratively integrate**: Gradually incorporate these changes into the existing MLOps pipeline.
+*   **1. Keep GitHub Actions for CI, but Make it Inference-First**:
+    *   The `ci-cd.yaml` workflow has been updated to remove model training.
+    *   It now focuses on installing dependencies, running updated tests, building the Docker image, and smoke-testing the FastAPI application using a tiny LLM (`sshleifer/tiny-gpt2`).
+*   **2. Do Not Retrain in Every PR**:
+    *   The `ci-cd.yaml` no longer performs training.
+    *   A new, separate workflow `train-llm.yml` has been created for manual fine-tuning, triggered via `workflow_dispatch`.
+*   **3. Fine-Tune with LoRA, Not Full-Model Training**:
+    *   The `train-llm.yml` workflow includes placeholders and dependency installations (`peft`, `accelerate`, `bitsandbytes`) to support LoRA-based fine-tuning.
+*   **4. Train Locally, Validate in GitHub**:
+    *   This strategy is now enabled by the separation of CI and training workflows.
+*   **5. Keep DVC for Reproducibility, Not Heavy CI**:
+    *   The `ci-cd.yaml` no longer runs `dvc repro` for training.
+    *   `train-llm.yml` includes DVC commands to add and push trained model artifacts.
+*   **6. Start with One Tiny LLM Use Case**:
+    *   The `app/main.py` and `app/schemas.py` have been updated to support text prompt completion using an LLM.
+*   **7. Change the API Contract Early**:
+    *   `app/schemas.py` has been updated to define `PredictRequest` with `prompt`, `max_new_tokens`, and `temperature`, and `PredictResponse` with `generated_text` and `model_version`.
+    *   The `test_app.py` has been updated to reflect this new API contract.
+*   **8. Recommended Stack for a Constrained Environment**:
+    *   The core components (FastAPI, Hugging Face Transformers, GitHub Actions, DVC) are now integrated as described.
+    *   `requirements.txt` has been updated to include `transformers` and `torch`, and remove `scikit-learn` and `joblib`.
+    *   Outdated test files (`test_model.py`, `test_dvc.py`, `test_drift.py`) have been removed.
