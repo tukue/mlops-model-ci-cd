@@ -35,21 +35,23 @@ jobs:
       run: |
         pytest tests/ -v
 
-    - name: Test Docker Build
+    - name: Build Docker Image
       run: |
         docker build -t mlops-api .
         
-    - name: Test API Endpoints
+    - name: Test API Endpoints (in Docker)
       run: |
-        # Start API in background
-        # We use the default tiny model for CI
-        uvicorn app.main:app --host 127.0.0.1 --port 8000 &
-        UVICORN_PID=$!
-
+        # Run the Docker container
+        # Map port 8000 to 8000
+        docker run -d --name mlops-api-container -p 8000:8000 -e MODEL_NAME="google/flan-t5-small" mlops-api
+        
         # Wait for API startup
+        # Add an initial sleep to allow the container to start
+        sleep 10
         STARTUP_SUCCESS=false
         for i in {1..60}; do
-          if curl -sSf http://127.0.0.1:8000/health > /dev/null; then
+          # Add --connect-timeout to curl to give it a chance to connect
+          if curl -sSf --connect-timeout 2 http://127.0.0.1:8000/health > /dev/null; then
             STARTUP_SUCCESS=true
             break
           fi
@@ -58,8 +60,9 @@ jobs:
 
         if [ "$STARTUP_SUCCESS" = "false" ]; then
           echo "API failed to start within timeout"
-          kill "$UVICORN_PID" 2>/dev/null || true
-          wait "$UVICORN_PID" 2>/dev/null || true
+          docker logs mlops-api-container
+          docker stop mlops-api-container
+          docker rm mlops-api-container
           exit 1
         fi
         
@@ -82,5 +85,6 @@ jobs:
           -d '{"prompt": "Hello, world!", "max_new_tokens": 10}')
         echo "$PREDICT_JSON" | python -c 'import json,sys; data=json.load(sys.stdin); assert "generated_text" in data; print(data["generated_text"])'
         
-        # Stop background process
-        kill "$UVICORN_PID"
+        # Stop and remove container
+        docker stop mlops-api-container
+        docker rm mlops-api-container

@@ -12,3 +12,4 @@ psutil
 transformers>=4.37.2
 torch>=2.2.0
 numpy<2
+sentencepiece
