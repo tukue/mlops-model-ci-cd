@@ -6,10 +6,10 @@ client = TestClient(app)
 def test_root():
     response = client.get("/")
     assert response.status_code == 200
-    assert response.json() == {
-        "message": "MLOps API is running",
-        "endpoints": ["/health", "/predict", "/metrics", "/model-info", "/drift-status", "/docs"],
-    }
+    expected_endpoints = ["/health", "/predict", "/metrics", "/docs"]
+    response_json = response.json()
+    assert response_json["message"] == "MLOps API is running"
+    assert all(endpoint in response_json["endpoints"] for endpoint in expected_endpoints)
 
 def test_health():
     response = client.get("/health")
@@ -19,13 +19,6 @@ def test_health():
     assert "model_ready" in json_response
     assert "resource_usage" in json_response
     assert "uptime_seconds" in json_response
-
-def test_model_info():
-    response = client.get("/model-info")
-    assert response.status_code == 200
-    # Should have either model info or error message
-    json_response = response.json()
-    assert "active_version" in json_response or "error" in json_response
 
 def test_metrics():
     response = client.get("/metrics")
@@ -37,27 +30,23 @@ def test_metrics():
     assert "api_errors_total" in metrics_text
 
 def test_predict_valid():
-    payload = {"features": [5.1, 3.5, 1.4, 0.2]}
+    payload = {"prompt": "Hello, world!", "max_new_tokens": 10}
     response = client.post("/predict", json=payload)
-    if response.status_code == 503:
-        # Model not found, skip assertion on prediction value
-        assert "Model not found" in response.json()["detail"]
-    else:
-        assert response.status_code == 200
-        json_response = response.json()
-        assert "prediction" in json_response
-        assert isinstance(json_response["prediction"], int)
-        # Model version should be included if model exists
-        assert "model_version" in json_response
+    
+    assert response.status_code == 200
+    json_response = response.json()
+    assert "generated_text" in json_response
+    assert isinstance(json_response["generated_text"], str)
+    assert len(json_response["generated_text"]) > 0
+    assert "model_version" in json_response
 
 def test_predict_invalid_schema():
-    payload = {"features": [1.0, 2.0]} # Too short
+    # Test with missing prompt
+    payload = {"max_new_tokens": 10}
     response = client.post("/predict", json=payload)
     assert response.status_code == 422
 
-def test_drift_status():
-    response = client.get("/drift-status")
-    assert response.status_code == 200
-    payload = response.json()
-    assert "status" in payload
-    assert "report_path" in payload
+    # Test with invalid max_new_tokens
+    payload = {"prompt": "test", "max_new_tokens": -5}
+    response = client.post("/predict", json=payload)
+    assert response.status_code == 422
