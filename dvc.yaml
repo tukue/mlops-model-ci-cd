@@ -4,4 +4,4 @@ stages:
     deps:
       - src/train.py
     outs:
-      - artifacts/model.joblib
+      - artifacts/DialoGPT-small

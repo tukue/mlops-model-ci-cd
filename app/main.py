@@ -9,7 +9,7 @@ import psutil
 import torch
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+from transformers import AutoTokenizer, AutoModelForCausalLM # Changed from AutoModelForSeq2SeqLM
 
 from app.schemas import PredictRequest, PredictResponse
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
@@ -51,7 +51,7 @@ API_INFLIGHT_REQUESTS = Gauge("api_inflight_requests", "Requests currently being
 SERVICE_UPTIME_SECONDS = Gauge("service_uptime_seconds", "API process uptime in seconds")
 
 # Use an instruction-tuned model for better chat-like responses
-DEFAULT_MODEL_NAME = "google/flan-t5-small"
+DEFAULT_MODEL_NAME = "microsoft/DialoGPT-small" # Changed default model name
 MODEL_NAME = os.environ.get("MODEL_NAME", DEFAULT_MODEL_NAME)
 MODEL_PATH = Path(os.environ.get("MODEL_PATH", Path(__file__).parent.parent / "artifacts" / "model"))
 
@@ -71,8 +71,8 @@ def get_model():
 
         try:
             _tokenizer = AutoTokenizer.from_pretrained(model_source)
-            _model = AutoModelForSeq2SeqLM.from_pretrained(model_source)
-            # T5 doesn't need a pad token set manually, but good practice to check
+            _model = AutoModelForCausalLM.from_pretrained(model_source) # Changed from AutoModelForSeq2SeqLM
+            # DialoGPT models typically use a specific pad_token or eos_token for generation
             if _tokenizer.pad_token is None:
                 _tokenizer.pad_token = _tokenizer.eos_token
             MODEL_LOAD_COUNT.labels(status="success").inc()
@@ -188,6 +188,7 @@ def predict(req: PredictRequest):
                     do_sample=True,
                     top_k=50,
                     top_p=0.95,
+                    pad_token_id=tokenizer.eos_token_id # Added for causal LMs like DialoGPT
                 )
             
             generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
