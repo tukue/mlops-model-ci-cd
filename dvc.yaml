@@ -4,4 +4,4 @@ stages:
     deps:
       - src/train.py
     outs:
-      - artifacts/DialoGPT-small
+      - artifacts/Qwen2.5-0.5B-Instruct

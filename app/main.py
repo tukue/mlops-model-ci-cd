@@ -9,7 +9,7 @@ import psutil
 import torch
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
-from transformers import AutoTokenizer, AutoModelForCausalLM # Changed from AutoModelForSeq2SeqLM
+from transformers import AutoTokenizer, AutoModelForCausalLM
 
 from app.schemas import PredictRequest, PredictResponse
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
@@ -50,8 +50,8 @@ PROCESS_THREAD_COUNT = Gauge("process_thread_count", "Process thread count")
 API_INFLIGHT_REQUESTS = Gauge("api_inflight_requests", "Requests currently being processed")
 SERVICE_UPTIME_SECONDS = Gauge("service_uptime_seconds", "API process uptime in seconds")
 
-# Use an instruction-tuned model for better chat-like responses
-DEFAULT_MODEL_NAME = "microsoft/DialoGPT-small" # Changed default model name
+# Update default model name
+DEFAULT_MODEL_NAME = "Qwen/Qwen2.5-0.5B-Instruct"
 MODEL_NAME = os.environ.get("MODEL_NAME", DEFAULT_MODEL_NAME)
 MODEL_PATH = Path(os.environ.get("MODEL_PATH", Path(__file__).parent.parent / "artifacts" / "model"))
 
@@ -70,11 +70,14 @@ def get_model():
             model_source = MODEL_NAME
 
         try:
-            _tokenizer = AutoTokenizer.from_pretrained(model_source)
-            _model = AutoModelForCausalLM.from_pretrained(model_source) # Changed from AutoModelForSeq2SeqLM
-            # DialoGPT models typically use a specific pad_token or eos_token for generation
+            # Qwen often benefits from trust_remote_code=True, though strictly not always needed for 2.5
+            _tokenizer = AutoTokenizer.from_pretrained(model_source, trust_remote_code=True)
+            _model = AutoModelForCausalLM.from_pretrained(model_source, trust_remote_code=True)
+
+            # Ensure padding token is set
             if _tokenizer.pad_token is None:
                 _tokenizer.pad_token = _tokenizer.eos_token
+
             MODEL_LOAD_COUNT.labels(status="success").inc()
             MODEL_LOADED.set(1)
             logger.info("model_loaded_successfully model_name=%s", model_source)
@@ -178,6 +181,9 @@ def predict(req: PredictRequest):
     with PREDICTION_LATENCY.time():
         try:
             tokenizer, model = get_model()
+
+            # Format input as a prompt if needed, though Qwen is instruction tuned
+            # Simple text completion is supported too.
             inputs = tokenizer(req.prompt, return_tensors="pt", padding=True, truncation=True)
             
             with torch.no_grad():
@@ -188,7 +194,7 @@ def predict(req: PredictRequest):
                     do_sample=True,
                     top_k=50,
                     top_p=0.95,
-                    pad_token_id=tokenizer.eos_token_id # Added for causal LMs like DialoGPT
+                    pad_token_id=tokenizer.eos_token_id
                 )
             
             generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)

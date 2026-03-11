@@ -7,6 +7,7 @@ dvc
 prometheus-client
 mlflow
 psutil
+accelerate
 transformers>=4.37.2
 torch>=2.2.0
 sentencepiece
