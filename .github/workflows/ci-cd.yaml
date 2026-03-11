@@ -2,7 +2,7 @@ name: MLOps CI/CD
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, feature/update-chat-model ]
   pull_request:
     branches: [ main ]
 
@@ -43,7 +43,7 @@ jobs:
       run: |
         # Run the Docker container
         # Map port 8000 to 8000
-        docker run -d --name mlops-api-container -p 8000:8000 -e MODEL_NAME="google/flan-t5-small" mlops-api
+        docker run -d --name mlops-api-container -p 8000:8000 mlops-api
         
         # Wait for API startup
         # Add an initial sleep to allow the container to start
