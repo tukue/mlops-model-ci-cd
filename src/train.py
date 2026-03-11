@@ -2,6 +2,7 @@ from pathlib import Path
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import mlflow
 import os
+import shutil
 
 # Define paths relative to this file
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -17,6 +18,11 @@ def main() -> None:
     print(f"Running training script from {__file__}")
     print(f"Artifact directory: {ARTIFACT_DIR}")
     
+    # Clean the destination directory before saving to avoid Windows file locking issues
+    if MODEL_PATH.exists():
+        print(f"Cleaning existing model directory: {MODEL_PATH}")
+        shutil.rmtree(MODEL_PATH)
+
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
 
     # Set tracking URI to a local directory if not already set for manual runs.
@@ -29,13 +35,12 @@ def main() -> None:
 
         print(f"Downloading model and tokenizer for '{model_name}'...")
 
-        # Download and save the model
-        # trust_remote_code might be needed for some Qwen versions, but Qwen2.5 is usually standard.
-        model = AutoModelForCausalLM.from_pretrained(model_name, trust_remote_code=True)
+        # Download and save the model (removed trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(model_name)
         model.save_pretrained(MODEL_PATH)
 
-        # Download and save the tokenizer
-        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        # Download and save the tokenizer (removed trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
         tokenizer.save_pretrained(MODEL_PATH)
 
         print(f"Model and tokenizer saved to {MODEL_PATH}")
