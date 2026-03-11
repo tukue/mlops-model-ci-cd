@@ -2,38 +2,44 @@ from pathlib import Path
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import mlflow
 import os
+import shutil
 
 # Define paths relative to this file
 PROJECT_ROOT = Path(__file__).parent.parent
 ARTIFACT_DIR = PROJECT_ROOT / "artifacts"
-MODEL_PATH = ARTIFACT_DIR / "DialoGPT-small"
+# Update path for the new model
+MODEL_PATH = ARTIFACT_DIR / "Qwen2.5-0.5B-Instruct"
 
 def main() -> None:
     """
-    Downloads the DialoGPT-small model and tokenizer from Hugging Face,
+    Downloads the Qwen/Qwen2.5-0.5B-Instruct model and tokenizer from Hugging Face,
     saves them to the artifacts directory, and logs them to MLflow.
     """
     print(f"Running training script from {__file__}")
     print(f"Artifact directory: {ARTIFACT_DIR}")
     
+    # Clean the destination directory before saving to avoid Windows file locking issues
+    if MODEL_PATH.exists():
+        print(f"Cleaning existing model directory: {MODEL_PATH}")
+        shutil.rmtree(MODEL_PATH)
+
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
 
     # Set tracking URI to a local directory if not already set for manual runs.
-    # The test will set its own tracking URI.
     if not mlflow.get_tracking_uri() or "databricks" in mlflow.get_tracking_uri():
         mlflow.set_tracking_uri("file:./mlruns")
 
     with mlflow.start_run():
-        model_name = "microsoft/DialoGPT-small"
+        model_name = "Qwen/Qwen2.5-0.5B-Instruct"
         mlflow.log_param("model_name", model_name)
 
         print(f"Downloading model and tokenizer for '{model_name}'...")
 
-        # Download and save the model
+        # Download and save the model (removed trust_remote_code=True)
         model = AutoModelForCausalLM.from_pretrained(model_name)
         model.save_pretrained(MODEL_PATH)
 
-        # Download and save the tokenizer
+        # Download and save the tokenizer (removed trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         tokenizer.save_pretrained(MODEL_PATH)
 

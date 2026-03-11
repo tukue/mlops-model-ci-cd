@@ -30,7 +30,7 @@ def test_mlflow_tracking():
 
     # Check for logged parameter
     assert "model_name" in last_run.data.params, "model_name parameter not logged"
-    assert last_run.data.params["model_name"] == "microsoft/DialoGPT-small"
+    assert last_run.data.params["model_name"] == "Qwen/Qwen2.5-0.5B-Instruct"
 
     # Check for logged artifacts
     artifacts = client.list_artifacts(last_run.info.run_id, "model")
