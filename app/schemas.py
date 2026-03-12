@@ -3,10 +3,13 @@ from typing import Optional
 
 class PredictRequest(BaseModel):
     prompt: str = Field(..., min_length=1)
-    # Increased token limit
     max_new_tokens: int = Field(150, gt=0, le=150)
-    temperature: Optional[float] = Field(0.7, gt=0.0, le=1.0)
-    top_p: Optional[float] = Field(0.9, gt=0.0, le=1.0)
+    # Added ge=0.1 to prevent instability
+    temperature: Optional[float] = Field(0.7, ge=0.1, le=1.0)
+    # Added ge=0.1 to prevent instability
+    top_p: Optional[float] = Field(0.9, ge=0.1, le=1.0)
+    # Exposed top_k to make it configurable
+    top_k: Optional[int] = Field(50, gt=0)
 
     model_config = {
         "json_schema_extra": {
@@ -16,6 +19,7 @@ class PredictRequest(BaseModel):
                     "max_new_tokens": 150,
                     "temperature": 0.7,
                     "top_p": 0.9,
+                    "top_k": 50,
                 }
             ]
         }
