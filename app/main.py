@@ -198,9 +198,6 @@ def predict(req: PredictRequest):
 
             inputs = tokenizer([text], return_tensors="pt")
 
-            # Move inputs to same device as model (if model is on GPU, not applicable for default CPU here but good practice)
-            # inputs = inputs.to(model.device)
-
             input_length = inputs.input_ids.shape[1]
 
             with torch.no_grad():
@@ -210,7 +207,7 @@ def predict(req: PredictRequest):
                     temperature=req.temperature,
                     do_sample=True,
                     top_k=50,
-                    top_p=0.95,
+                    top_p=req.top_p, # Pass top_p from the request
                     pad_token_id=tokenizer.eos_token_id
                 )
             
