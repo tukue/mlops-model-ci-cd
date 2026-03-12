@@ -53,7 +53,8 @@ SERVICE_UPTIME_SECONDS = Gauge("service_uptime_seconds", "API process uptime in 
 # Update default model name
 DEFAULT_MODEL_NAME = "Qwen/Qwen2.5-0.5B-Instruct"
 MODEL_NAME = os.environ.get("MODEL_NAME", DEFAULT_MODEL_NAME)
-MODEL_PATH = Path(os.environ.get("MODEL_PATH", Path(__file__).parent.parent / "artifacts" / "model"))
+# Corrected default model path to match DVC output
+MODEL_PATH = Path(os.environ.get("MODEL_PATH", Path(__file__).parent.parent / "artifacts" / "Qwen2.5-0.5B-Instruct"))
 
 _tokenizer = None
 _model = None
@@ -70,9 +71,9 @@ def get_model():
             model_source = MODEL_NAME
 
         try:
-            # Qwen often benefits from trust_remote_code=True, though strictly not always needed for 2.5
-            _tokenizer = AutoTokenizer.from_pretrained(model_source, trust_remote_code=True)
-            _model = AutoModelForCausalLM.from_pretrained(model_source, trust_remote_code=True)
+            # Removed trust_remote_code=True for security
+            _tokenizer = AutoTokenizer.from_pretrained(model_source)
+            _model = AutoModelForCausalLM.from_pretrained(model_source)
 
             # Ensure padding token is set
             if _tokenizer.pad_token is None:
@@ -182,22 +183,40 @@ def predict(req: PredictRequest):
         try:
             tokenizer, model = get_model()
 
-            # Format input as a prompt if needed, though Qwen is instruction tuned
-            # Simple text completion is supported too.
-            inputs = tokenizer(req.prompt, return_tensors="pt", padding=True, truncation=True)
-            
+            # Check for chat template support and apply it
+            if hasattr(tokenizer, 'chat_template') and tokenizer.chat_template:
+                messages = [
+                    {"role": "system", "content": "You are a helpful AI assistant."},
+                    {"role": "user", "content": req.prompt}
+                ]
+                text = tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True
+                )
+            else:
+                # Fallback for models without a chat template
+                text = req.prompt
+
+            inputs = tokenizer([text], return_tensors="pt")
+
+            input_length = inputs.input_ids.shape[1]
+
             with torch.no_grad():
                 outputs = model.generate(
                     **inputs,
                     max_new_tokens=req.max_new_tokens,
                     temperature=req.temperature,
                     do_sample=True,
-                    top_k=50,
-                    top_p=0.95,
+                    top_k=req.top_k, # Use top_k from the request
+                    top_p=req.top_p,
                     pad_token_id=tokenizer.eos_token_id
                 )
             
-            generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
+            # Slice the output to remove the input prompt tokens
+            generated_tokens = outputs[0][input_length:]
+            generated_text = tokenizer.decode(generated_tokens, skip_special_tokens=True)
+
             PREDICTION_COUNT.inc()
             
             return PredictResponse(generated_text=generated_text, model_version=MODEL_NAME)
