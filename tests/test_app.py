@@ -1,5 +1,15 @@
 from fastapi.testclient import TestClient
 from app.main import app
+import shutil
+from pathlib import Path
+
+# This function will run before each test in this file
+def setup_function():
+    # Clear cached model artifacts to prevent file locking issues on Windows
+    model_path = Path(__file__).parent.parent / "artifacts" / "Qwen2.5-0.5B-Instruct"
+    if model_path.exists():
+        print(f"Clearing model cache at: {model_path}")
+        shutil.rmtree(model_path)
 
 client = TestClient(app)
 
