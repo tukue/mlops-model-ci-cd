@@ -183,20 +183,18 @@ def predict(req: PredictRequest):
         try:
             tokenizer, model = get_model()
 
-            # Check for chat template support and apply it
-            if hasattr(tokenizer, 'chat_template') and tokenizer.chat_template:
-                messages = [
-                    {"role": "system", "content": "You are a helpful AI assistant."},
-                    {"role": "user", "content": req.prompt}
-                ]
-                text = tokenizer.apply_chat_template(
-                    messages,
-                    tokenize=False,
-                    add_generation_prompt=True
-                )
-            else:
-                # Fallback for models without a chat template
-                text = req.prompt
+            # Format input as a chat conversation (System + User)
+            messages = [
+                {"role": "system", "content": "You are a helpful AI assistant."},
+                {"role": "user", "content": req.prompt}
+            ]
+
+            # Use tokenizer.apply_chat_template to format the input correctly for Qwen
+            text = tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True
+            )
 
             inputs = tokenizer([text], return_tensors="pt")
 
@@ -208,8 +206,8 @@ def predict(req: PredictRequest):
                     max_new_tokens=req.max_new_tokens,
                     temperature=req.temperature,
                     do_sample=True,
-                    top_k=req.top_k, # Use top_k from the request
-                    top_p=req.top_p,
+                    top_k=50,
+                    top_p=req.top_p, # Pass top_p from the request
                     pad_token_id=tokenizer.eos_token_id
                 )
             
