@@ -89,11 +89,6 @@ def get_model():
         AutoModelForCausalLM = causal_lm_class
         AutoTokenizer = tokenizer_class
 
-    if torch is None or AutoTokenizer is None or AutoModelForCausalLM is None:
-        MODEL_LOAD_COUNT.labels(status="failure").inc()
-        MODEL_LOADED.set(0)
-        raise RuntimeError("PyTorch and Transformers are required for model inference.")
-
     if _model is None or _tokenizer is None:
         model_path_str = str(MODEL_PATH)
         if MODEL_PATH.exists():
@@ -155,6 +150,18 @@ def load_drift_status() -> dict[str, Any]:
     try:
         with DRIFT_REPORT_PATH.open("r", encoding="utf-8") as report_file:
             report = json.load(report_file)
+    except OSError:
+        DRIFT_DETECTED.set(0)
+        DRIFTED_FEATURE_COUNT.set(0)
+        logger.exception("could_not_read_drift_report path=%s", DRIFT_REPORT_PATH)
+        return {
+            "status": "read_error",
+            "drift_detected": False,
+            "drifted_feature_count": 0,
+            "drifted_features": [],
+            "report_path": str(DRIFT_REPORT_PATH),
+            "message": "Drift report could not be read.",
+        }
     except json.JSONDecodeError:
         DRIFT_DETECTED.set(0)
         DRIFTED_FEATURE_COUNT.set(0)

@@ -92,6 +92,25 @@ def test_drift_status_invalid_report(tmp_path, monkeypatch):
     assert json_response["drift_detected"] is False
     assert json_response["drifted_feature_count"] == 0
 
+def test_drift_status_read_error(tmp_path, monkeypatch):
+    class UnreadableReportPath:
+        def exists(self):
+            return True
+
+        def open(self, *args, **kwargs):
+            raise PermissionError("denied")
+
+        def __str__(self):
+            return str(tmp_path / "drift_report.json")
+
+    monkeypatch.setattr(main, "DRIFT_REPORT_PATH", UnreadableReportPath())
+
+    json_response = main.load_drift_status()
+
+    assert json_response["status"] == "read_error"
+    assert json_response["drift_detected"] is False
+    assert json_response["drifted_feature_count"] == 0
+
 def test_drift_status_ignores_malformed_drifted_features(tmp_path, monkeypatch):
     report_path = tmp_path / "drift_report.json"
     report_path.write_text(
