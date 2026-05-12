@@ -3,16 +3,27 @@ import logging
 import os
 import time
 import uuid
+from contextlib import nullcontext
 from pathlib import Path
+from typing import Any
 
 import psutil
-import torch
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
-from transformers import AutoTokenizer, AutoModelForCausalLM
 
 from app.schemas import PredictRequest, PredictResponse
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
+
+try:
+    import torch
+except ImportError:
+    torch = None
+
+try:
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+except ImportError:
+    AutoModelForCausalLM = None
+    AutoTokenizer = None
 
 app = FastAPI(title="MLOps CI/CD API")
 logger = logging.getLogger("mlops_api")
@@ -42,6 +53,11 @@ PREDICTION_ERRORS = Counter(
     "Prediction failures",
     ["reason"],
 )
+PREDICTION_CLASS_DISTRIBUTION = Counter(
+    "ml_prediction_class_distribution_total",
+    "Distribution of prediction output classes",
+    ["class_name"],
+)
 MODEL_LOAD_COUNT = Counter("ml_model_load_total", "Model load attempts", ["status"])
 MODEL_LOADED = Gauge("ml_model_loaded", "Model load status: 1=loaded, 0=not loaded")
 PROCESS_MEMORY_RSS_BYTES = Gauge("process_memory_rss_bytes", "Process resident memory in bytes")
@@ -49,18 +65,26 @@ PROCESS_CPU_PERCENT = Gauge("process_cpu_percent", "Process CPU usage percent")
 PROCESS_THREAD_COUNT = Gauge("process_thread_count", "Process thread count")
 API_INFLIGHT_REQUESTS = Gauge("api_inflight_requests", "Requests currently being processed")
 SERVICE_UPTIME_SECONDS = Gauge("service_uptime_seconds", "API process uptime in seconds")
+DRIFT_DETECTED = Gauge("ml_drift_detected", "Latest drift status: 1=drift detected, 0=no drift")
+DRIFTED_FEATURE_COUNT = Gauge("ml_drifted_feature_count", "Number of drifted features in latest drift report")
 
 # Update default model name
 DEFAULT_MODEL_NAME = "Qwen/Qwen2.5-0.5B-Instruct"
 MODEL_NAME = os.environ.get("MODEL_NAME", DEFAULT_MODEL_NAME)
 # Corrected default model path to match DVC output
 MODEL_PATH = Path(os.environ.get("MODEL_PATH", Path(__file__).parent.parent / "artifacts" / "Qwen2.5-0.5B-Instruct"))
+DRIFT_REPORT_PATH = Path(os.environ.get("DRIFT_REPORT_PATH", Path(__file__).parent.parent / "artifacts" / "drift_report.json"))
 
 _tokenizer = None
 _model = None
 
 def get_model():
     global _tokenizer, _model
+    if torch is None or AutoTokenizer is None or AutoModelForCausalLM is None:
+        MODEL_LOAD_COUNT.labels(status="failure").inc()
+        MODEL_LOADED.set(0)
+        raise RuntimeError("PyTorch and Transformers are required for model inference.")
+
     if _model is None or _tokenizer is None:
         model_path_str = str(MODEL_PATH)
         if MODEL_PATH.exists():
@@ -94,6 +118,66 @@ def update_resource_metrics() -> None:
     PROCESS_CPU_PERCENT.set(PROCESS.cpu_percent(interval=None))
     PROCESS_THREAD_COUNT.set(PROCESS.num_threads())
     SERVICE_UPTIME_SECONDS.set(time.time() - START_TIME)
+
+def classify_prediction_output(generated_text: str) -> str:
+    """Bucket generative output so dashboards can show prediction distribution."""
+    token_count = len(generated_text.split())
+    if token_count == 0:
+        return "empty"
+    if token_count <= 20:
+        return "short"
+    if token_count <= 100:
+        return "medium"
+    return "long"
+
+def load_drift_status() -> dict[str, Any]:
+    if not DRIFT_REPORT_PATH.exists():
+        DRIFT_DETECTED.set(0)
+        DRIFTED_FEATURE_COUNT.set(0)
+        return {
+            "status": "unavailable",
+            "drift_detected": False,
+            "drifted_feature_count": 0,
+            "drifted_features": [],
+            "report_path": str(DRIFT_REPORT_PATH),
+            "message": "Drift report has not been generated yet.",
+        }
+
+    try:
+        with DRIFT_REPORT_PATH.open("r", encoding="utf-8") as report_file:
+            report = json.load(report_file)
+    except json.JSONDecodeError:
+        DRIFT_DETECTED.set(0)
+        DRIFTED_FEATURE_COUNT.set(0)
+        logger.exception("invalid_drift_report path=%s", DRIFT_REPORT_PATH)
+        return {
+            "status": "invalid_report",
+            "drift_detected": False,
+            "drifted_feature_count": 0,
+            "drifted_features": [],
+            "report_path": str(DRIFT_REPORT_PATH),
+            "message": "Drift report is not valid JSON.",
+        }
+
+    drifted_features = report.get("drifted_features", {})
+    if isinstance(drifted_features, dict):
+        drifted_feature_names = list(drifted_features.keys())
+    else:
+        drifted_feature_names = list(drifted_features)
+
+    drift_detected = bool(report.get("drift_detected", False))
+    drifted_feature_count = len(drifted_feature_names)
+    DRIFT_DETECTED.set(1 if drift_detected else 0)
+    DRIFTED_FEATURE_COUNT.set(drifted_feature_count)
+
+    return {
+        "status": "ok",
+        "drift_detected": drift_detected,
+        "drifted_feature_count": drifted_feature_count,
+        "drifted_features": drifted_feature_names,
+        "metrics": report.get("metrics", {}),
+        "report_path": str(DRIFT_REPORT_PATH),
+    }
 
 @app.middleware("http")
 async def track_requests(request: Request, call_next):
@@ -153,7 +237,7 @@ def root():
     return {
         "message": "MLOps API is running",
         "model_name": MODEL_NAME,
-        "endpoints": ["/health", "/predict", "/metrics", "/docs"],
+        "endpoints": ["/health", "/predict", "/drift-status", "/metrics", "/docs"],
     }
 
 @app.get("/health")
@@ -175,7 +259,12 @@ def health():
 @app.get("/metrics")
 def metrics():
     update_resource_metrics()
+    load_drift_status()
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+@app.get("/drift-status")
+def drift_status():
+    return load_drift_status()
 
 @app.post("/predict", response_model=PredictResponse)
 def predict(req: PredictRequest):
@@ -202,7 +291,8 @@ def predict(req: PredictRequest):
 
             input_length = inputs.input_ids.shape[1]
 
-            with torch.no_grad():
+            no_grad = torch.no_grad() if torch is not None else nullcontext()
+            with no_grad:
                 outputs = model.generate(
                     **inputs,
                     max_new_tokens=req.max_new_tokens,
@@ -212,15 +302,18 @@ def predict(req: PredictRequest):
                     top_p=req.top_p,
                     pad_token_id=tokenizer.eos_token_id
                 )
-            
+
             # Slice the output to remove the input prompt tokens
             generated_tokens = outputs[0][input_length:]
             generated_text = tokenizer.decode(generated_tokens, skip_special_tokens=True)
 
             PREDICTION_COUNT.inc()
-            
+            PREDICTION_CLASS_DISTRIBUTION.labels(
+                class_name=classify_prediction_output(generated_text),
+            ).inc()
+
             return PredictResponse(generated_text=generated_text, model_version=MODEL_NAME)
-        
+
         except Exception as e:
             PREDICTION_ERRORS.labels(reason="inference_failure").inc()
             logger.exception("prediction_inference_failed error=%s", e.__class__.__name__)
