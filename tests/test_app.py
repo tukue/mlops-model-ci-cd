@@ -1,23 +1,25 @@
+import os
+
+os.environ["SKIP_MODEL_LOAD_ON_STARTUP"] = "1"
+
 from fastapi.testclient import TestClient
 
 from app import main
 from app.main import app
-import shutil
-from pathlib import Path
 
 # This function will run before each test in this file
 def setup_function():
-    # Clear cached model artifacts to prevent file locking issues on Windows
-    model_path = Path(__file__).parent.parent / "artifacts" / "Qwen2.5-0.5B-Instruct"
-    if model_path.exists():
-        print(f"Clearing model cache at: {model_path}")
-        shutil.rmtree(model_path)
+    # Clear in-memory model handles without deleting local model artifacts.
+    main._model = None
+    main._tokenizer = None
+    main.MODEL_LOADED.set(0)
 
 client = TestClient(app)
 
 def test_root():
     response = client.get("/")
     assert response.status_code == 200
+    assert "X-Request-ID" in response.headers
     expected_endpoints = ["/health", "/predict", "/drift-status", "/metrics", "/docs"]
     response_json = response.json()
     assert response_json["message"] == "MLOps API is running"
@@ -90,6 +92,22 @@ def test_drift_status_invalid_report(tmp_path, monkeypatch):
     assert json_response["drift_detected"] is False
     assert json_response["drifted_feature_count"] == 0
 
+def test_drift_status_ignores_malformed_drifted_features(tmp_path, monkeypatch):
+    report_path = tmp_path / "drift_report.json"
+    report_path.write_text(
+        '{"drift_detected": true, "drifted_features": "feature_a", "metrics": {}}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(main, "DRIFT_REPORT_PATH", report_path)
+
+    response = client.get("/drift-status")
+
+    assert response.status_code == 200
+    json_response = response.json()
+    assert json_response["drift_detected"] is True
+    assert json_response["drifted_feature_count"] == 0
+    assert json_response["drifted_features"] == []
+
 def test_metrics_include_drift_report_values(tmp_path, monkeypatch):
     report_path = tmp_path / "drift_report.json"
     report_path.write_text(
@@ -150,3 +168,7 @@ def test_predict_invalid_schema():
     payload = {"prompt": "test", "max_new_tokens": -5}
     response = client.post("/predict", json=payload)
     assert response.status_code == 422
+
+    metrics_response = client.get("/metrics")
+    assert metrics_response.status_code == 200
+    assert 'api_errors_total{endpoint="/predict",exception_type="http_422",method="POST"}' in metrics_response.text

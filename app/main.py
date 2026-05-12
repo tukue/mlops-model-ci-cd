@@ -14,16 +14,9 @@ from fastapi.responses import JSONResponse, Response
 from app.schemas import PredictRequest, PredictResponse
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 
-try:
-    import torch
-except ImportError:
-    torch = None
-
-try:
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-except ImportError:
-    AutoModelForCausalLM = None
-    AutoTokenizer = None
+torch = None
+AutoModelForCausalLM = None
+AutoTokenizer = None
 
 app = FastAPI(title="MLOps CI/CD API")
 logger = logging.getLogger("mlops_api")
@@ -45,7 +38,7 @@ API_REQUEST_LATENCY = Histogram(
 )
 API_ERRORS = Counter(
     "api_errors_total",
-    "Total unhandled API errors",
+    "Total API errors by method, endpoint, and error type",
     ["method", "endpoint", "exception_type"],
 )
 PREDICTION_ERRORS = Counter(
@@ -74,12 +67,28 @@ MODEL_NAME = os.environ.get("MODEL_NAME", DEFAULT_MODEL_NAME)
 # Corrected default model path to match DVC output
 MODEL_PATH = Path(os.environ.get("MODEL_PATH", Path(__file__).parent.parent / "artifacts" / "Qwen2.5-0.5B-Instruct"))
 DRIFT_REPORT_PATH = Path(os.environ.get("DRIFT_REPORT_PATH", Path(__file__).parent.parent / "artifacts" / "drift_report.json"))
+SKIP_MODEL_LOAD_ON_STARTUP = os.getenv("SKIP_MODEL_LOAD_ON_STARTUP", "").lower() in {"1", "true", "yes"}
 
 _tokenizer = None
 _model = None
+MODEL_LOADED.set(0)
 
 def get_model():
-    global _tokenizer, _model
+    global _tokenizer, _model, torch, AutoModelForCausalLM, AutoTokenizer
+    if torch is None or AutoTokenizer is None or AutoModelForCausalLM is None:
+        try:
+            import torch as torch_module
+            from transformers import AutoModelForCausalLM as causal_lm_class
+            from transformers import AutoTokenizer as tokenizer_class
+        except ImportError:
+            MODEL_LOAD_COUNT.labels(status="failure").inc()
+            MODEL_LOADED.set(0)
+            raise RuntimeError("PyTorch and Transformers are required for model inference.")
+
+        torch = torch_module
+        AutoModelForCausalLM = causal_lm_class
+        AutoTokenizer = tokenizer_class
+
     if torch is None or AutoTokenizer is None or AutoModelForCausalLM is None:
         MODEL_LOAD_COUNT.labels(status="failure").inc()
         MODEL_LOADED.set(0)
@@ -162,8 +171,10 @@ def load_drift_status() -> dict[str, Any]:
     drifted_features = report.get("drifted_features", {})
     if isinstance(drifted_features, dict):
         drifted_feature_names = list(drifted_features.keys())
-    else:
+    elif isinstance(drifted_features, list):
         drifted_feature_names = list(drifted_features)
+    else:
+        drifted_feature_names = []
 
     drift_detected = bool(report.get("drift_detected", False))
     drifted_feature_count = len(drifted_feature_names)
@@ -182,15 +193,19 @@ def load_drift_status() -> dict[str, Any]:
 @app.middleware("http")
 async def track_requests(request: Request, call_next):
     request_id = str(uuid.uuid4())
+    request.state.request_id = request_id
     start_time = time.perf_counter()
     status_code = 500
+    error_recorded = False
     API_INFLIGHT_REQUESTS.inc()
 
     try:
         response = await call_next(request)
         status_code = response.status_code
+        response.headers["X-Request-ID"] = request_id
         return response
     except Exception as exc:
+        error_recorded = True
         API_ERRORS.labels(
             method=request.method,
             endpoint=request.url.path,
@@ -210,6 +225,12 @@ async def track_requests(request: Request, call_next):
             endpoint=request.url.path,
             status=str(status_code),
         ).inc()
+        if status_code >= 400 and not error_recorded:
+            API_ERRORS.labels(
+                method=request.method,
+                endpoint=request.url.path,
+                exception_type=f"http_{status_code}",
+            ).inc()
         API_REQUEST_LATENCY.labels(
             method=request.method,
             endpoint=request.url.path,
@@ -227,6 +248,10 @@ async def track_requests(request: Request, call_next):
 
 @app.on_event("startup")
 def startup_event():
+    if SKIP_MODEL_LOAD_ON_STARTUP:
+        logger.info("skipping_model_load_on_startup")
+        return
+
     try:
         get_model()
     except Exception:
