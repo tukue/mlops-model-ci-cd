@@ -143,7 +143,11 @@ def validate_artifact(artifact_dir: Path) -> None:
     if not (artifact_dir / "config.json").is_file():
         missing.append("config.json")
 
-    if not any(artifact_dir.glob(pattern) for pattern in MODEL_WEIGHT_PATTERNS):
+    if not any(
+        path.is_file()
+        for pattern in MODEL_WEIGHT_PATTERNS
+        for path in artifact_dir.glob(pattern)
+    ):
         missing.append("model weight file (*.bin, *.safetensors, or *.h5)")
 
     if not any((artifact_dir / file_name).is_file() for file_name in TOKENIZER_FILE_NAMES):
