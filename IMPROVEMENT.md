@@ -13,6 +13,8 @@
     - Added drift observability via `/drift-status` endpoint and drift gauges (`ml_drift_detected`, `ml_drifted_feature_count`).
     - Enhanced `/health` with readiness (`model_ready`), uptime, and resource snapshot.
     - Added structured request logging with request ID, latency, path, and status.
+    - Hardened drift report reads against file-system errors and JSON decode failures.
+    - Removed redundant model import null checks after lazy dependency loading.
 
 ### Specific Improvements
 
@@ -25,3 +27,5 @@
 *   Switched MLflow default tracking backend to SQLite (`sqlite:///mlflow.db`) to avoid deprecated filesystem tracking backend usage.
 *   Updated inference input to preserve feature names and remove sklearn feature-name mismatch warnings.
 *   Updated API tests to cover new observability endpoints/metrics.
+*   Hardened `/drift-status` against unreadable report files and invalid JSON payloads.
+*   Removed dead defensive code from model loading after import-time dependency checks were simplified.
