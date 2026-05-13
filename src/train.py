@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import shutil
+import sys
 from pathlib import Path
 
 import mlflow
@@ -21,6 +22,19 @@ MODEL_CLASSES = {
     "seq2seq-lm": AutoModelForSeq2SeqLM,
     "masked-lm": AutoModelForMaskedLM,
 }
+MODEL_WEIGHT_PATTERNS = ("*.bin", "*.safetensors", "*.h5")
+TOKENIZER_FILE_NAMES = {
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "vocab.json",
+    "vocab.txt",
+    "spiece.model",
+    "merges.txt",
+}
+
+
+class LLMPipelineError(RuntimeError):
+    """Raised when the LLM artifact pipeline cannot produce a valid artifact."""
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -88,9 +102,62 @@ def write_pipeline_manifest(args: argparse.Namespace) -> None:
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
 
+def load_model_and_tokenizer(args: argparse.Namespace):
+    model_class = MODEL_CLASSES[args.model_task]
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(
+            args.model_name,
+            trust_remote_code=args.trust_remote_code,
+        )
+        model = model_class.from_pretrained(
+            args.model_name,
+            trust_remote_code=args.trust_remote_code,
+        )
+    except Exception as exc:
+        raise LLMPipelineError(
+            f"Failed to load model or tokenizer for '{args.model_name}' "
+            f"with task '{args.model_task}': {exc}"
+        ) from exc
+
+    return tokenizer, model
+
+
+def save_model_artifact(tokenizer, model, artifact_dir: Path) -> None:
+    try:
+        tokenizer.save_pretrained(artifact_dir)
+        model.save_pretrained(artifact_dir)
+    except Exception as exc:
+        raise LLMPipelineError(
+            f"Failed to save model artifact to '{artifact_dir}': {exc}"
+        ) from exc
+
+
+def validate_artifact(artifact_dir: Path) -> None:
+    missing: list[str] = []
+
+    if not artifact_dir.is_dir():
+        raise LLMPipelineError(f"Artifact directory was not created: {artifact_dir}")
+
+    if not (artifact_dir / "config.json").is_file():
+        missing.append("config.json")
+
+    if not any(artifact_dir.glob(pattern) for pattern in MODEL_WEIGHT_PATTERNS):
+        missing.append("model weight file (*.bin, *.safetensors, or *.h5)")
+
+    if not any((artifact_dir / file_name).is_file() for file_name in TOKENIZER_FILE_NAMES):
+        missing.append("tokenizer file")
+
+    if not (artifact_dir / "pipeline_manifest.json").is_file():
+        missing.append("pipeline_manifest.json")
+
+    if missing:
+        raise LLMPipelineError(
+            f"Artifact validation failed for '{artifact_dir}'. Missing: {', '.join(missing)}"
+        )
+
+
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
-    model_class = MODEL_CLASSES[args.model_task]
 
     print(f"Running LLM pipeline script from {__file__}")
     print(f"Model: {args.model_name}")
@@ -116,22 +183,19 @@ def main(argv: list[str] | None = None) -> None:
         if args.learning_rate:
             mlflow.log_param("learning_rate", args.learning_rate)
 
-        tokenizer = AutoTokenizer.from_pretrained(
-            args.model_name,
-            trust_remote_code=args.trust_remote_code,
-        )
-        model = model_class.from_pretrained(
-            args.model_name,
-            trust_remote_code=args.trust_remote_code,
-        )
+        tokenizer, model = load_model_and_tokenizer(args)
 
-        tokenizer.save_pretrained(args.artifact_dir)
-        model.save_pretrained(args.artifact_dir)
+        save_model_artifact(tokenizer, model, args.artifact_dir)
         write_pipeline_manifest(args)
+        validate_artifact(args.artifact_dir)
 
         mlflow.log_artifacts(str(args.artifact_dir), artifact_path="model")
         print(f"Saved and logged LLM artifact to {args.artifact_dir}")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except LLMPipelineError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc

@@ -36,10 +36,6 @@ on:
         description: 'Optional DVC remote URL for pushing artifacts'
         required: false
         default: ''
-      training_command:
-        description: 'Optional custom command for provider/model-specific fine-tuning'
-        required: false
-        default: ''
       trust_remote_code:
         description: 'Allow custom remote code from the model repository'
         required: true
@@ -88,31 +84,20 @@ jobs:
         LLM_LEARNING_RATE: ${{ inputs.learning_rate }}
         LLM_ARTIFACT_DIR: ${{ inputs.artifact_dir }}
         LLM_TRUST_REMOTE_CODE: ${{ inputs.trust_remote_code }}
-        TRAINING_COMMAND: ${{ inputs.training_command }}
       run: |
-        if [ -n "$TRAINING_COMMAND" ]; then
-          echo "Running custom LLM training command"
-          bash -lc "$TRAINING_COMMAND"
-        else
-          TRUST_REMOTE_CODE_FLAG=""
-          if [ "$LLM_TRUST_REMOTE_CODE" = "true" ]; then
-            TRUST_REMOTE_CODE_FLAG="--trust-remote-code"
-          fi
-
-          python src/train.py \
-            --model-name "$LLM_MODEL_NAME" \
-            --model-task "$LLM_MODEL_TASK" \
-            --artifact-dir "$LLM_ARTIFACT_DIR" \
-            --dataset-path "$LLM_DATASET_PATH" \
-            --epochs "$LLM_EPOCHS" \
-            --learning-rate "$LLM_LEARNING_RATE" \
-            $TRUST_REMOTE_CODE_FLAG
+        TRUST_REMOTE_CODE_FLAG=""
+        if [ "$LLM_TRUST_REMOTE_CODE" = "true" ]; then
+          TRUST_REMOTE_CODE_FLAG="--trust-remote-code"
         fi
 
-        test -d "$LLM_ARTIFACT_DIR"
-        if [ ! -f "$LLM_ARTIFACT_DIR/pipeline_manifest.json" ]; then
-          python -c 'import json, os, pathlib; artifact_dir = pathlib.Path(os.environ["LLM_ARTIFACT_DIR"]); manifest = {"model_name": os.environ["LLM_MODEL_NAME"], "model_task": os.environ["LLM_MODEL_TASK"], "dataset_path": os.environ["LLM_DATASET_PATH"] or None, "epochs": float(os.environ["LLM_EPOCHS"]), "learning_rate": os.environ["LLM_LEARNING_RATE"] or None, "artifact_dir": str(artifact_dir), "custom_training_command": bool(os.environ["TRAINING_COMMAND"]), "trust_remote_code": os.environ["LLM_TRUST_REMOTE_CODE"] == "true"}; (artifact_dir / "pipeline_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")'
-        fi
+        python src/train.py \
+          --model-name "$LLM_MODEL_NAME" \
+          --model-task "$LLM_MODEL_TASK" \
+          --artifact-dir "$LLM_ARTIFACT_DIR" \
+          --dataset-path "$LLM_DATASET_PATH" \
+          --epochs "$LLM_EPOCHS" \
+          --learning-rate "$LLM_LEARNING_RATE" \
+          $TRUST_REMOTE_CODE_FLAG
 
     - name: Track LLM Artifact with DVC
       env:
