@@ -1,214 +1,194 @@
 # MLOps Model CI/CD Pipeline
 
-A production-ready MLOps system demonstrating end-to-end machine learning lifecycle management with automated CI/CD, model versioning, and monitoring.
+End-to-end ML lifecycle automation: versioned data pipelines, automated training via CI/CD, containerized deployment, and real-time monitoring with Prometheus.
 
-## 🚀 Features
+**Stack**: `Python` · `FastAPI` · `Docker` · `GitHub Actions` · `DVC` · `Prometheus` · `Transformers` · `REST API`
 
-- **Automated ML Pipeline**: GitHub Actions CI/CD with model training and testing
-- **Data Versioning**: DVC (Data Version Control) for tracking data and model pipelines
-- **Model Versioning**: Custom registry with deployment logic and rollback capability
-- **Production API**: FastAPI with health checks, metrics, and error handling
-- **Monitoring**: Prometheus metrics for latency, errors, model loading, drift, and resource utilization
-- **Containerization**: Docker support for consistent deployment
-- **Testing**: Comprehensive unit and integration tests
+---
 
-## 🏗️ Architecture
+## Architecture
+
+```mermaid
+flowchart TB
+    classDef dev fill:#1a1a2e,color:#e94560,stroke:#e94560
+    classDef ci fill:#16213e,color:#0f3460,stroke:#0f3460
+    classDef reg fill:#533483,color:#e94560,stroke:#e94560
+    classDef serve fill:#2d4059,color:#00adb5,stroke:#00adb5
+    classDef obs fill:#1b1b2f,color:#f08a5d,stroke:#f08a5d
+
+    subgraph DEV["Development"]
+        direction LR
+        CODE[Python / FastAPI Code] --> GIT[GitHub]
+        DVC[DVC Pipeline] --> DATA[Data + Artifacts]
+        GIT --> DVC
+    end
+    class DEV dev
+
+    subgraph CI_CD["CI/CD — GitHub Actions"]
+        direction TB
+        GIT --> SETUP[Setup Python 3.9]
+        SETUP --> TRAIN[Train Model]
+        TRAIN --> TEST[pytest]
+        TEST --> BUILD[Docker Build]
+        BUILD --> VALIDATE[Smoke Test API]
+    end
+    class CI_CD ci
+
+    subgraph REG["Model Registry"]
+        direction LR
+        TRAIN --> MODEL[Versioned Artifacts]
+        MODEL --> DEPLOY[Load Logic]
+        DEPLOY --> ROLLBACK[Rollback]
+    end
+    class REG reg
+
+    subgraph SERVE["Serving"]
+        direction TB
+        BUILD --> DOCKER[Docker Container]
+        DOCKER --> API[FastAPI Server]
+        API --> PREDICT[POST /predict]
+        API --> HEALTH[GET /health]
+        API --> METRICS_EP[GET /metrics]
+    end
+    class SERVE serve
+
+    subgraph OBS["Observability"]
+        direction TB
+        METRICS_EP --> PROM[Prometheus]
+        PROM --> LATENCY[Prediction Latency]
+        PROM --> COUNTS[Request / Error Counts]
+        PROM --> GAUGES[Memory / CPU / Drift]
+    end
+    class OBS obs
+
+    DEV --> CI_CD
+    CI_CD --> REG
+    CI_CD --> SERVE
+    SERVE --> OBS
+    REG -.-> API
+```
+
+## Capabilities
+
+| Area | What It Does |
+|---|---|
+| **Data Versioning** | DVC tracks datasets and model artifacts outside Git, enabling reproducible pipelines |
+| **Automated CI/CD** | GitHub Actions trains, tests, builds Docker images, and validates live endpoints on every push |
+| **Model Registry** | Custom versioning system with deployment logic and rollback support |
+| **REST API** | FastAPI with Pydantic validation, structured error handling, and health checks |
+| **Containerization** | Docker + docker-compose for reproducible, portable deployment |
+| **Observability** | 12+ Prometheus metrics: latency, error rates, drift detection, resource usage |
+| **Testing** | 4-tier test pyramid: unit, integration, model, and DVC pipeline tests |
+| **Drift Detection** | Runtime feature drift analysis with Prometheus-exported drift gauges |
+
+## Key Engineering Decisions
+
+| Decision | Rationale |
+|---|---|
+| **Stateless API** | Horizontally scalable behind any load balancer; no session affinity needed |
+| **In-memory model cache** | Singleton avoids per-request reload overhead |
+| **Graceful degradation** | `/health` returns `degraded` when model is unavailable instead of crashing |
+| **Request ID middleware** | Every request gets a UUID for traceability across logs, errors, and responses |
+| **Pydantic input validation** | Malformed requests are rejected at the boundary before reaching model logic |
+| **Prometheus histograms** | Latency percentiles (p50/p95/p99) are computable from `/metrics` |
+| **Prompt-based LLM inference** | Supports any Hugging Face model via `MODEL_NAME` env variable |
+
+## CI/CD Pipeline
+
+Every push to `main` triggers:
+
+1. **Setup** — Python 3.9, install dependencies
+2. **Train** — `python src/train.py`, saves model to `artifacts/`
+3. **Test** — `pytest tests/ -v` (unit, integration, model, DVC)
+4. **Build** — `docker build` produces a production image
+5. **Validate** — container starts, smoke-tests `/health` and `/predict`
+
+## API
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /health` | Readiness check with model status and resource snapshot |
+| `POST /predict` | LLM inference with configurable generation parameters |
+| `GET /metrics` | Prometheus metrics in text format |
+| `GET /drift-status` | Latest drift detection summary |
+| `GET /docs` | Interactive Swagger UI |
+
+**POST /predict**
+```json
+// Request                          // Response
+{                                   {
+  "prompt": "Hello",                  "generated_text": "...",
+  "max_new_tokens": 100,              "model_version": "Qwen/Qwen2.5-0.5B-Instruct"
+  "temperature": 0.7                }
+}
+```
+
+## Observability
+
+All metrics export at `GET /metrics` for Prometheus scraping:
+
+- **Latency**: `ml_prediction_duration_seconds` (histogram)
+- **Volume**: `ml_predictions_total`, `api_requests_total` (counters)
+- **Errors**: `api_errors_total`, `ml_prediction_errors_total` (counters by reason/type)
+- **Model**: `ml_model_loaded` (gauge), `ml_model_load_total` (counter)
+- **Drift**: `ml_drift_detected`, `ml_drifted_feature_count` (gauges)
+- **Resources**: `process_memory_rss_bytes`, `process_cpu_percent`, `process_thread_count` (gauges)
+
+## Testing
 
 ```
-GitHub → Actions → Docker → Production API
-   ↓         ↓        ↓         ↓
-  Code → Test → Build → Deploy → Monitor
-   ↑
-  DVC (Data Versioning)
+Unit Tests  →  Integration Tests  →  Model Tests  →  DVC Tests  →  CI/CD Smoke Tests
 ```
 
-## 📊 API Endpoints
+Every layer validates the pipeline from individual components through to the deployed container.
 
-- `GET /` - API information and available endpoints
-- `GET /health` - Health check for load balancers
-- `POST /predict` - Make predictions with model versioning
-- `GET /model-info` - Active model metadata and metrics
-- `GET /drift-status` - Latest drift detection summary from saved report
-- `GET /metrics` - Prometheus metrics for monitoring
-- `GET /docs` - Interactive API documentation
+## Project Structure
 
-## 🛠️ Quick Start
+```
+├── app/                  # FastAPI application
+│   ├── main.py           # Routes, middleware, Prometheus instrumentation
+│   └── schemas.py        # Pydantic request/response models
+├── src/                  # ML logic
+│   ├── train.py          # Model training
+│   └── model_registry.py # Versioning, load logic, rollback
+├── tests/                # Test suite
+├── artifacts/            # Model storage (DVC-tracked)
+├── .github/workflows/    # CI/CD definitions
+├── dvc.yaml              # DVC pipeline
+├── Dockerfile            # Container image
+└── docker-compose.yml    # Local deployment
+```
 
-### Prerequisites
-- Python 3.9+
-- Docker (optional)
-
-### Local Development
-
-1. **Clone and setup**
-   ```bash
-   git clone <repo-url>
-   cd mlops-model-ci-cd
-   bash setup_env.sh
-   source .venv/Scripts/activate  # On Windows (Git Bash)
-   ```
-
-2. **Initialize Data Versioning (DVC)**
-   ```bash
-   dvc init
-   dvc repro  # Runs the training pipeline defined in dvc.yaml
-   ```
-
-3. **Run tests**
-   ```bash
-   pytest tests/ -v
-   ```
-
-4. **Start API**
-   ```bash
-   uvicorn app.main:app --reload
-   ```
-
-5. **Test prediction**
-   ```bash
-   curl -X POST http://localhost:8000/predict \
-     -H "Content-Type: application/json" \
-     -d '{"features": [5.1, 3.5, 1.4, 0.2]}'
-   ```
-
-### Docker Deployment
+## Quick Start
 
 ```bash
-# Build and run
+git clone <repo-url>
+cd mlops-model-ci-cd
+bash setup_env.sh
+source .venv/Scripts/activate
+dvc repro                  # Train model
+pytest tests/ -v           # Run tests
+uvicorn app.main:app --reload  # Start API
+```
+
+## Docker
+
+```bash
 docker-compose up --build
-
-# Or manually
-docker build -t mlops-api .
-docker run -p 8000:8000 mlops-api
 ```
 
-## 📈 Data & Model Versioning (DVC)
+## Documentation
 
-This project uses **DVC** to manage the machine learning pipeline and version control large files (like datasets and models) that shouldn't be in Git.
+| Guide | Description |
+|---|---|
+| [Architecture Deep Dive](docs/architecture.md) | Component diagrams, data flow, technology choices |
+| [API Reference](docs/api.md) | Full endpoint documentation with examples |
+| [CI/CD Pipeline](docs/ci-cd.md) | Workflow stages and local simulation |
+| [Setup Guide](docs/setup.md) | Installation, configuration, troubleshooting |
+| [Monitoring](docs/monitoring.md) | Metrics reference and health checks |
+| [DVC Guide](docs/dvc.md) | Data versioning commands and best practices |
+| [Model Registry](docs/model-registry.md) | Versioning, deployment, rollback |
 
-- **`dvc.yaml`**: Defines the pipeline stages (e.g., training).
-- **`dvc.lock`**: Captures the exact versions of dependencies and outputs for reproducibility.
+## License
 
-To reproduce the pipeline:
-```bash
-dvc repro
-```
-
-To track changes:
-```bash
-git add dvc.yaml dvc.lock
-git commit -m "Update pipeline"
-```
-
-## 🔍 Monitoring & Observability
-
-### Prometheus Metrics
-- `ml_predictions_total` - Total predictions made
-- `ml_prediction_duration_seconds` - Prediction latency
-- `api_requests_total` - API requests by method/endpoint/status
-- `api_request_duration_seconds` - API latency by method/endpoint
-- `api_errors_total` - Unhandled API exceptions by route/type
-- `ml_prediction_errors_total` - Prediction failures by reason
-- `ml_model_load_total` and `ml_model_loaded` - Model load reliability and readiness
-- `process_memory_rss_bytes`, `process_cpu_percent`, `process_thread_count` - Runtime resource utilization
-- `ml_drift_detected`, `ml_drifted_feature_count` - Drift state from latest drift report
-
-### Health Monitoring
-- `/health` endpoint with readiness, uptime, and resource snapshot
-- Structured error handling with proper HTTP codes
-- Request tracking middleware with per-request latency/error telemetry
-
-## 🧪 Testing Strategy
-
-- **Unit Tests**: Individual component testing
-- **Integration Tests**: End-to-end API testing
-- **Model Tests**: Training pipeline validation
-- **DVC Tests**: Verifies data pipeline reproducibility
-- **CI/CD Tests**: Docker build and endpoint verification
-
-## 🔄 CI/CD Pipeline
-
-GitHub Actions workflow includes:
-
-1. **Setup**: Python environment and dependencies
-2. **Train**: Model training with registry
-3. **Test**: Unit and integration tests
-4. **Build**: Docker image creation
-5. **Validate**: Live API endpoint testing
-
-## 📁 Project Structure
-
-```
-├── app/
-│   ├── main.py          # FastAPI application
-│   └── schemas.py       # Pydantic models
-├── src/
-│   ├── train.py         # Model training script
-│   └── model_registry.py # Model versioning system
-├── tests/
-│   ├── test_app.py      # API tests
-│   ├── test_model.py    # Model tests
-│   └── test_dvc.py      # DVC pipeline tests
-├── artifacts/           # Model storage (ignored by git, tracked by DVC)
-├── .github/workflows/   # CI/CD configuration
-├── dvc.yaml             # DVC pipeline definition
-├── dvc.lock             # DVC pipeline state
-├── Dockerfile           # Container configuration
-├── docker-compose.yml   # Local deployment
-└── requirements.txt     # Dependencies
-```
-
-## 🎯 Production Considerations
-
-### Scalability
-- Stateless API design for horizontal scaling
-- Model caching for improved performance
-- Async-ready FastAPI framework
-
-### Security
-- Input validation with Pydantic schemas
-- Proper error handling without information leakage
-- Health checks for monitoring systems
-
-### Reliability
-- Graceful degradation when model unavailable
-- Comprehensive logging for debugging
-- Cross-platform compatibility
-
-## 📊 Model Performance
-
-- **Dataset**: Iris classification (150 samples, 4 features)
-- **Algorithm**: Logistic Regression
-- **Accuracy**: 96.7% on test set
-- **Latency**: <100ms prediction time
-
-## 🚀 Deployment Options
-
-### Free Tier Deployment
-- **Railway/Render**: 500 hours/month free
-- **Docker Hub**: Unlimited public repositories
-- **GitHub Actions**: 2000 minutes/month
-
-### Production Deployment
-- **AWS ECS/Fargate**: Container orchestration
-- **Kubernetes**: Advanced scaling and management
-- **Load Balancer**: High availability setup
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit changes (`git commit -m 'Add amazing feature'`)
-4. Push to branch (`git push origin feature/amazing-feature`)
-5. Open Pull Request
-
-## 📝 License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## 🔗 Links
-
-- **API Documentation**: http://localhost:8000/docs
-- **Health Check**: http://localhost:8000/health
-- **Metrics**: http://localhost:8000/metrics
-- **Model Info**: http://localhost:8000/model-info
+MIT
