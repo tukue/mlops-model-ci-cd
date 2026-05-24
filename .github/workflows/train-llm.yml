@@ -4,21 +4,43 @@ on:
   workflow_dispatch:
     inputs:
       model_name:
-        description: 'Base model to fine-tune (e.g., distilgpt2)'
+        description: 'Hugging Face model id or local path to materialize'
         required: true
-        default: 'distilgpt2'
+        default: 'sshleifer/tiny-gpt2'
+      model_task:
+        description: 'Model task/head to load'
+        required: true
+        type: choice
+        options:
+          - causal-lm
+          - seq2seq-lm
+          - masked-lm
+        default: 'causal-lm'
       dataset_path:
-        description: 'Path to the training dataset (e.g., data/train.csv)'
-        required: true
-        default: 'data/train.csv'
+        description: 'Optional path to training/evaluation data for lineage'
+        required: false
+        default: ''
       epochs:
-        description: 'Number of training epochs'
+        description: 'Training epochs to record or pass to custom training'
         required: true
-        default: '3'
+        default: '0'
       learning_rate:
-        description: 'Learning rate for training'
+        description: 'Learning rate to record or pass to custom training'
+        required: false
+        default: ''
+      artifact_dir:
+        description: 'Directory to save the model artifact'
         required: true
-        default: '2e-5'
+        default: 'artifacts/model'
+      dvc_remote:
+        description: 'Optional DVC remote URL for pushing artifacts'
+        required: false
+        default: ''
+      trust_remote_code:
+        description: 'Allow custom remote code from the model repository'
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -39,42 +61,62 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         if [ -f requirements.txt ]; then python -m pip install -r requirements.txt; fi
-        # Install additional dependencies for training if needed
-        python -m pip install accelerate peft bitsandbytes
+        python -m pip install accelerate peft
 
-    - name: Initialize DVC
+    - name: Configure DVC
+      env:
+        DVC_REMOTE: ${{ inputs.dvc_remote }}
       run: |
         dvc init --no-scm
-        dvc remote add -d origin s3://your-dvc-bucket # Replace with your DVC remote
-        dvc pull || echo "No existing DVC data found or remote not configured, continuing with fresh training"
+        if [ -n "$DVC_REMOTE" ]; then
+          dvc remote add -d origin "$DVC_REMOTE"
+          dvc pull || echo "No existing DVC data found, continuing with fresh artifact"
+        else
+          echo "No DVC remote configured; artifact will be added locally only"
+        fi
 
-    - name: Run LLM Fine-tuning
+    - name: Materialize or Train LLM Artifact
+      env:
+        LLM_MODEL_NAME: ${{ inputs.model_name }}
+        LLM_MODEL_TASK: ${{ inputs.model_task }}
+        LLM_DATASET_PATH: ${{ inputs.dataset_path }}
+        LLM_EPOCHS: ${{ inputs.epochs }}
+        LLM_LEARNING_RATE: ${{ inputs.learning_rate }}
+        LLM_ARTIFACT_DIR: ${{ inputs.artifact_dir }}
+        LLM_TRUST_REMOTE_CODE: ${{ inputs.trust_remote_code }}
       run: |
-        # This is a placeholder. You would replace this with your actual training script.
-        # Example: python train.py --model ${{ github.event.inputs.model_name }} \
-        # --dataset ${{ github.event.inputs.dataset_path }} \
-        # --epochs ${{ github.event.inputs.epochs }} \
-        # --lr ${{ github.event.inputs.learning_rate }}
-        echo "Simulating LLM fine-tuning with inputs:"
-        echo "Model: ${{ github.event.inputs.model_name }}"
-        echo "Dataset: ${{ github.event.inputs.dataset_path }}"
-        echo "Epochs: ${{ github.event.inputs.epochs }}"
-        echo "Learning Rate: ${{ github.event.inputs.learning_rate }}"
-        
-        # Create a dummy model artifact for DVC tracking
-        mkdir -p artifacts/model
-        echo "dummy model content" > artifacts/model/pytorch_model.bin
-        echo "dummy tokenizer content" > artifacts/model/tokenizer.json
+        TRUST_REMOTE_CODE_FLAG=""
+        if [ "$LLM_TRUST_REMOTE_CODE" = "true" ]; then
+          TRUST_REMOTE_CODE_FLAG="--trust-remote-code"
+        fi
 
-    - name: DVC Add and Push Trained Model
+        python src/train.py \
+          --model-name "$LLM_MODEL_NAME" \
+          --model-task "$LLM_MODEL_TASK" \
+          --artifact-dir "$LLM_ARTIFACT_DIR" \
+          --dataset-path "$LLM_DATASET_PATH" \
+          --epochs "$LLM_EPOCHS" \
+          --learning-rate "$LLM_LEARNING_RATE" \
+          $TRUST_REMOTE_CODE_FLAG
+
+    - name: Track LLM Artifact with DVC
+      env:
+        LLM_ARTIFACT_DIR: ${{ inputs.artifact_dir }}
+        DVC_REMOTE: ${{ inputs.dvc_remote }}
       run: |
-        dvc add artifacts/model
-        dvc push
+        dvc add "$LLM_ARTIFACT_DIR"
+        if [ -n "$DVC_REMOTE" ]; then
+          dvc push
+        else
+          echo "Skipping dvc push because dvc_remote was not provided"
+        fi
         
     - name: Commit DVC changes (optional)
+      env:
+        LLM_ARTIFACT_DIR: ${{ inputs.artifact_dir }}
       run: |
         git config user.name "GitHub Actions"
         git config user.email "actions@github.com"
-        git add artifacts/model.dvc
-        git commit -m "Update DVC-tracked LLM model" || echo "No changes to commit"
+        git add "$LLM_ARTIFACT_DIR.dvc"
+        git commit -m "Update DVC-tracked LLM artifact" || echo "No changes to commit"
         git push
