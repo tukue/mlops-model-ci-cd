@@ -2,7 +2,7 @@ name: MLOps CI/CD
 
 on:
   push:
-    branches: [ main, feature/update-chat-model, feature/generic-llm-pipeline ]
+    branches: [ main, feature/update-chat-model ]
   pull_request:
     branches: [ main ]
 
