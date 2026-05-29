@@ -38,12 +38,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Download tiny test model
+        run: |
+          pip install huggingface_hub
+          huggingface-cli download hf-internal-testing/tiny-random-gpt2 \
+            --local-dir artifacts/tiny-model
+
       - name: Build Docker image
         run: docker build -t mlops-api .
 
       - name: Smoke test (health only)
         run: |
-          docker run -d --name mlops-api-container -p 8000:8000 -e SKIP_TELEMETRY=1 mlops-api
+          docker run -d --name mlops-api-container -p 8000:8000 \
+            -e SKIP_TELEMETRY=1 \
+            -e MODEL_PATH=/app/artifacts/tiny-model \
+            -e MODEL_NAME=tiny-random-gpt2 \
+            mlops-api
           for i in {1..30}; do
             if curl -sSf --connect-timeout 2 http://127.0.0.1:8000/health > /dev/null; then
               echo "Health OK"
