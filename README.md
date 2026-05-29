@@ -168,7 +168,7 @@ Every `/predict` LLM call produces a trace span with:
 
 ### Grafana + Tempo Dashboard
 
-Run the full stack with `docker-compose up` and open **http://localhost:3000** (Grafana, no login required) to see metrics and traces.
+Run the full stack with `docker-compose up` and open **`http://<deploy-host>:3000`** (default: `http://localhost:3000`, no login required) to see metrics and traces.
 
 ## Testing
 
