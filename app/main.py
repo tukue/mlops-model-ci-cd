@@ -14,15 +14,7 @@ from fastapi.responses import JSONResponse, Response
 from app.schemas import PredictRequest, PredictResponse
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 
-# OpenTelemetry
-from opentelemetry import trace
-from opentelemetry.sdk.resources import Resource
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor
-from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 
-# OpenLIT - LLM auto-instrumentation
-import openlit
 
 torch = None
 AutoModelForCausalLM = None
@@ -85,15 +77,36 @@ SKIP_MODEL_LOAD_ON_STARTUP = os.getenv("SKIP_MODEL_LOAD_ON_STARTUP", "").lower()
 OTEL_SERVICE_NAME = os.getenv("OTEL_SERVICE_NAME", "mlops-llm-api")
 OTEL_OTLP_ENDPOINT = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4318")
 
+
+class _NoopSpan:
+    def __enter__(self): return self
+    def __exit__(self, *a): pass
+    def set_attribute(self, k, v): pass
+
+
+class _NoopTracer:
+    def start_as_current_span(self, name): return _NoopSpan()
+
+
+TRACER: object = _NoopTracer()
+
+
 def setup_telemetry():
     try:
+        from opentelemetry import trace as _trace
+        from opentelemetry.sdk.resources import Resource
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+        import openlit
+
         resource = Resource.create({"service.name": OTEL_SERVICE_NAME})
         provider = TracerProvider(resource=resource)
         span_processor = BatchSpanProcessor(
             OTLPSpanExporter(endpoint=f"{OTEL_OTLP_ENDPOINT}/v1/traces")
         )
         provider.add_span_processor(span_processor)
-        trace.set_tracer_provider(provider)
+        _trace.set_tracer_provider(provider)
 
         openlit.init(
             service_name=OTEL_SERVICE_NAME,
@@ -101,12 +114,14 @@ def setup_telemetry():
             environment=os.getenv("ENVIRONMENT", "production"),
             disable_content_capture=True,
         )
+
+        global TRACER
+        TRACER = _trace.get_tracer(__name__)
         logger.info("opentelemetry_and_openlit_initialized endpoint=%s", OTEL_OTLP_ENDPOINT)
     except Exception:
         logger.exception("opentelemetry_init_failed endpoint=%s", OTEL_OTLP_ENDPOINT)
         raise
 
-TRACER = trace.get_tracer(__name__)
 # ---------------------------------------------------------------------------
 
 _tokenizer = None

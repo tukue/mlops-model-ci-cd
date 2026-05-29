@@ -31,7 +31,7 @@ jobs:
       - name: Run tests
         run: |
           mkdir -p artifacts
-          pytest tests/ -v -n auto --ignore=tests/test_telemetry.py
+          pytest tests/ -v -n auto
 
   docker-build:
     runs-on: ubuntu-latest
