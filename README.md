@@ -89,6 +89,18 @@ flowchart TB
     PROM -.-> GRAFANA
 ```
 
+## Monitoring — What Each Component Does
+
+| Component | Type | What It Measures | How You Use It |
+|---|---|---|---|
+| **Prometheus** (`/metrics`) | In-process metrics | Request rate, p50/p95/p99 latency, error count by reason, model loaded status, drift detected, memory/cpu/threads, uptime | `curl /metrics` or point any Prometheus scraper. Always works even if external services are down. |
+| **OpenTelemetry (custom span)** | Traces per request | Model name, provider, input/output token count, temperature/top_p/top_k/max_tokens, finish reason, generation duration | Query in Grafana Tempo: `{ gen_ai.operation.name = "chat" }` to find a specific prediction and see exactly what params and how many tokens were used. |
+| **OpenLIT** | Auto-instrumentation | Automatically captures spans from supported LLM SDKs (OpenAI, HuggingFace, LangChain, etc.) without per-call code | No-op if the SDK isn't used; auto-exports to the same OTEL Collector alongside custom spans. |
+| **Grafana Tempo** | Trace storage | Stores and indexes all OTel spans for TraceQL queries | Link from Grafana dashboard. Drill from a slow request metric into the exact trace. |
+| **Grafana** | Dashboards | Unifies Prometheus metrics + Tempo traces | Pre-provisioned LLM dashboard shows request rate, latency p50/p95/p99, token usage, error rate, drift, memory/cpu, and recent traces. No login required at `http://<deploy-host>:3000`. |
+
+**The key distinction**: Prometheus tells you *whether* something is wrong (latency spike, error rate up). OpenTelemetry tells you *which specific request* caused it and why (exact tokens, params, and timing). You need both.
+
 ## How Components Connect
 
 | Flow | Path |
