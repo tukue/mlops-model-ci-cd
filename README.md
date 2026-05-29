@@ -2,7 +2,7 @@
 
 End-to-end ML lifecycle automation: versioned data pipelines, automated training via CI/CD, containerized deployment, and real-time monitoring with Prometheus.
 
-**Stack**: `Python` · `FastAPI` · `Docker` · `GitHub Actions` · `DVC` · `Prometheus` · `Transformers` · `REST API`
+**Stack**: `Python` · `FastAPI` · `Docker` · `GitHub Actions` · `DVC` · `Prometheus` · `OpenTelemetry` · `OpenLIT` · `Grafana` · `Tempo` · `Transformers` · `REST API`
 
 ---
 
@@ -58,6 +58,10 @@ flowchart TB
         PROM --> LATENCY[Prediction Latency]
         PROM --> COUNTS[Request / Error Counts]
         PROM --> GAUGES[Memory / CPU / Drift]
+        PREDICT --> OTel[OTEL + OpenLIT]
+        OTel --> COLLECTOR[OTEL Collector]
+        COLLECTOR --> TEMPO[Grafana Tempo Traces]
+        COLLECTOR --> PROM
     end
     class OBS obs
 
@@ -66,6 +70,8 @@ flowchart TB
     CI_CD --> SERVE
     SERVE --> OBS
     REG -.-> API
+    TEMPO -.-> GRAFANA[Grafana Dashboard]
+    PROM -.-> GRAFANA
 ```
 
 ## Capabilities
@@ -77,7 +83,7 @@ flowchart TB
 | **Model Registry** | Custom versioning system with deployment logic and rollback support |
 | **REST API** | FastAPI with Pydantic validation, structured error handling, and health checks |
 | **Containerization** | Docker + docker-compose for reproducible, portable deployment |
-| **Observability** | 12+ Prometheus metrics: latency, error rates, drift detection, resource usage |
+| **Observability** | Prometheus metrics + OpenTelemetry GenAI traces + OpenLIT auto-instrumentation + Grafana dashboards |
 | **Testing** | 4-tier test pyramid: unit, integration, model, and DVC pipeline tests |
 | **Drift Detection** | Runtime feature drift analysis with Prometheus-exported drift gauges |
 
@@ -91,6 +97,9 @@ flowchart TB
 | **Request ID middleware** | Every request gets a UUID for traceability across logs, errors, and responses |
 | **Pydantic input validation** | Malformed requests are rejected at the boundary before reaching model logic |
 | **Prometheus histograms** | Latency percentiles (p50/p95/p99) are computable from `/metrics` |
+| **OpenTelemetry traces** | Every LLM inference produces a GenAI semantic span with token counts, model name, and parameters |
+| **OpenLIT auto-instrumentation** | Automatic LLM call tracing for supported providers without code changes |
+| **Grafana + Tempo** | Unified dashboards for metrics and distributed traces |
 | **Prompt-based LLM inference** | Supports any Hugging Face model via `MODEL_NAME` env variable |
 
 ## CI/CD Pipeline
@@ -125,7 +134,9 @@ Every push to `main` triggers:
 
 ## Observability
 
-All metrics export at `GET /metrics` for Prometheus scraping:
+### Prometheus Metrics
+
+Exported at `GET /metrics`:
 
 - **Latency**: `ml_prediction_duration_seconds` (histogram)
 - **Volume**: `ml_predictions_total`, `api_requests_total` (counters)
@@ -133,6 +144,31 @@ All metrics export at `GET /metrics` for Prometheus scraping:
 - **Model**: `ml_model_loaded` (gauge), `ml_model_load_total` (counter)
 - **Drift**: `ml_drift_detected`, `ml_drifted_feature_count` (gauges)
 - **Resources**: `process_memory_rss_bytes`, `process_cpu_percent`, `process_thread_count` (gauges)
+
+### OpenTelemetry Traces (GenAI Semantic Conventions)
+
+Every `/predict` LLM call produces a trace span with:
+
+| Attribute | Value |
+|---|---|
+| `gen_ai.operation.name` | `chat` |
+| `gen_ai.provider.name` | `huggingface` |
+| `gen_ai.request.model` | Model name (e.g. `Qwen/Qwen2.5-0.5B-Instruct`) |
+| `gen_ai.usage.input_tokens` | Prompt token count |
+| `gen_ai.usage.output_tokens` | Generated token count |
+| `gen_ai.request.temperature` | Sampling temperature |
+| `gen_ai.request.top_p` | Top-p sampling |
+| `gen_ai.request.top_k` | Top-k sampling |
+| `gen_ai.request.max_tokens` | Max new tokens |
+| `gen_ai.response.finish_reasons` | Completion reason |
+
+### OpenLIT Auto-instrumentation
+
+[OpenLIT](https://github.com/openlit/openlit) automatically instruments supported LLM SDK calls (OpenAI, Hugging Face, LangChain, etc.) and exports traces via OTLP.
+
+### Grafana + Tempo Dashboard
+
+Run the full stack with `docker-compose up` and open **http://localhost:3000** (Grafana, no login required) to see metrics and traces.
 
 ## Testing
 
@@ -145,18 +181,25 @@ Every layer validates the pipeline from individual components through to the dep
 ## Project Structure
 
 ```
-├── app/                  # FastAPI application
-│   ├── main.py           # Routes, middleware, Prometheus instrumentation
-│   └── schemas.py        # Pydantic request/response models
-├── src/                  # ML logic
-│   ├── train.py          # Model training
-│   └── model_registry.py # Versioning, load logic, rollback
-├── tests/                # Test suite
-├── artifacts/            # Model storage (DVC-tracked)
-├── .github/workflows/    # CI/CD definitions
-├── dvc.yaml              # DVC pipeline
-├── Dockerfile            # Container image
-└── docker-compose.yml    # Local deployment
+├── app/                    # FastAPI application
+│   ├── main.py             # Routes, middleware, OTEL + OpenLIT instrumentation
+│   └── schemas.py          # Pydantic request/response models
+├── src/                    # ML logic
+│   ├── train.py            # Model training
+│   └── model_registry.py   # Versioning, load logic, rollback
+├── tests/                  # Test suite
+├── artifacts/              # Model storage (DVC-tracked)
+├── grafana/                # Grafana provisioning
+│   └── provisioning/
+│       ├── dashboards/
+│       └── datasources/
+├── .github/workflows/      # CI/CD definitions
+├── dvc.yaml                # DVC pipeline
+├── Dockerfile              # Container image
+├── docker-compose.yml      # Local deployment (API + OTEL + Tempo + Prometheus + Grafana)
+├── otel-collector-config.yml
+├── prometheus.yml
+└── tempo.yml
 ```
 
 ## Quick Start

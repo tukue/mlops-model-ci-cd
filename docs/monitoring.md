@@ -1,8 +1,32 @@
 # Monitoring & Observability
 
-## Metrics Reference
+## Stack
 
-All metrics are exported at `GET /metrics` in Prometheus text format.
+| Layer | Tool | Purpose |
+|---|---|---|
+| **Metrics** | Prometheus client | Custom app metrics (latency, errors, drift, resources) at `GET /metrics` |
+| **Traces** | OpenTelemetry SDK | Manual GenAI semantic spans around `model.generate()` |
+| **Auto-instrumentation** | OpenLIT | Automatic LLM call tracing for OpenAI, Hugging Face, etc. |
+| **Collection** | OTEL Collector | Receives OTLP, batches, exports to Tempo + Prometheus |
+| **Tracing backend** | Grafana Tempo | Stores and queries distributed traces |
+| **Dashboards** | Grafana | Visualizes metrics + traces in unified LLM dashboard |
+
+## Data Flow
+
+```
+FastAPI /predict  ──OTLP──►  OTEL Collector  ──►  Tempo (traces)
+                         │
+                         └──►  Prometheus (metrics)
+                                  │
+                                  ▼
+                              Grafana Dashboards
+```
+
+## Prometheus Metrics
+
+All Prometheus metrics are exported at `GET /metrics`:
+
+
 
 ### Prediction Metrics
 

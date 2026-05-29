@@ -59,13 +59,23 @@ flowchart TB
         PROM --> ERRORS["Error Rates<br/>Counter by type"]
         PROM --> DRIFT["Data Drift<br/>Gauge: 0/1"]
         PROM --> RESOURCE["System Resources<br/>Memory / CPU / Threads"]
+
+        PREDICT --> OTEL["OpenTelemetry<br/>Custom GenAI Spans"]
+        OTEL --> COLLECTOR["OTEL Collector<br/>Aggregates & Exports"]
+        COLLECTOR --> TEMPO["Grafana Tempo<br/>Distributed Tracing"]
+        COLLECTOR --> PROM2["Prometheus<br/>OTEL Metrics"]
+
+        PREDICT --> OPENLIT["OpenLIT<br/>Auto-instrumentation"]
+        OPENLIT --> COLLECTOR
     end
     class OBSERVE obs
 
     subgraph EXTERNAL["External Systems"]
         direction LR
         USER["User / Client"] --> API
-        PROM --> GRAFANA["Grafana<br/>(optional)"]
+        PROM --> GRAFANA["Grafana<br/>Dashboards"]
+        TEMPO --> GRAFANA
+        PROM2 --> GRAFANA
     end
     class EXTERNAL ext
 
@@ -90,14 +100,21 @@ flowchart TB
                              │               │  /predict        │
                              └──────────────>│  /health         │
                                               │  /metrics        │
-                                              └──────────────────┘
+                                              │  OTel + OpenLIT  │
+                                              └────────┬─────────┘
                                                        │
-                                                       ▼
-                                              ┌──────────────────┐
-                                              │   Prometheus     │
-                                              │  latency, errors │
-                                              │  drift, resource │
-                                              └──────────────────┘
+                                          ┌────────────┼────────────┐
+                                          ▼            ▼            ▼
+                                   ┌──────────┐ ┌──────────┐ ┌──────────┐
+                                   │Prometheus│ │  OTEL    │ │  OpenLIT │
+                                   │ /metrics │ │ Collector│ │ Auto-inst│
+                                   └────┬─────┘ └────┬─────┘ └──────────┘
+                                        │            │
+                                        ▼            ▼
+                                   ┌──────────┐ ┌──────────┐
+                                   │ Grafana  │ │  Tempo   │
+                                   │Dashboards│ │  Traces  │
+                                   └──────────┘ └──────────┘
 ```
 
 ## Component Diagram
@@ -142,7 +159,7 @@ flowchart LR
 | **Model Serving** | Hugging Face Transformers | Industry standard for LLMs, broad model support |
 | **CI/CD** | GitHub Actions | Native GitHub integration, free tier, large ecosystem |
 | **Data Versioning** | DVC | Git-like semantics for data, pipeline reproducibility |
-| **Monitoring** | Prometheus client | Standard export format, wide tooling support |
+| **Monitoring** | Prometheus client + OpenTelemetry + OpenLIT | Standard metrics + GenAI semantic traces + auto-instrumentation |
 | **Containerization** | Docker + Compose | Portable, reproducible, dev-prod parity |
 | **Validation** | Pydantic v2 | Runtime type checking, JSON Schema generation |
 
