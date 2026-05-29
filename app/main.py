@@ -104,6 +104,7 @@ def setup_telemetry():
         logger.info("opentelemetry_and_openlit_initialized endpoint=%s", OTEL_OTLP_ENDPOINT)
     except Exception:
         logger.exception("opentelemetry_init_failed endpoint=%s", OTEL_OTLP_ENDPOINT)
+        raise
 
 TRACER = trace.get_tracer(__name__)
 # ---------------------------------------------------------------------------
