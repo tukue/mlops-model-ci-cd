@@ -94,6 +94,9 @@ TRACER: object = _NoopTracer()
 
 def setup_telemetry():
     try:
+        import socket
+        socket.setdefaulttimeout(5)
+
         from opentelemetry import trace as _trace
         from opentelemetry.sdk.resources import Resource
         from opentelemetry.sdk.trace import TracerProvider
@@ -104,7 +107,7 @@ def setup_telemetry():
         resource = Resource.create({"service.name": OTEL_SERVICE_NAME})
         provider = TracerProvider(resource=resource)
         span_processor = BatchSpanProcessor(
-            OTLPSpanExporter(endpoint=f"{OTEL_OTLP_ENDPOINT}/v1/traces")
+            OTLPSpanExporter(endpoint=f"{OTEL_OTLP_ENDPOINT}/v1/traces", timeout=5)
         )
         provider.add_span_processor(span_processor)
         _trace.set_tracer_provider(provider)
