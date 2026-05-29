@@ -1,12 +1,27 @@
 # MLOps Model CI/CD Pipeline
 
-End-to-end ML lifecycle automation: versioned data pipelines, automated training via CI/CD, containerized deployment, and real-time monitoring with Prometheus.
+End-to-end ML lifecycle automation: versioned data pipelines, automated training via CI/CD, containerized deployment, and observability with Prometheus + OpenTelemetry + Grafana.
 
-**Stack**: `Python` · `FastAPI` · `Docker` · `GitHub Actions` · `DVC` · `Prometheus` · `Transformers` · `REST API`
+**Stack**: `Python` · `FastAPI` · `Docker` · `GitHub Actions` · `DVC` · `Prometheus` · `OpenTelemetry` · `OpenLIT` · `Grafana` · `Tempo` · `Transformers`
 
 ---
 
-## Architecture
+## Problem & Solution
+
+Managing ML models in production is messy. Training is manual, deployments are copy-paste, and when inference breaks there is no visibility into why.
+
+This repo automates the entire ML lifecycle so you can **train, deploy, serve, and observe** an LLM with a single `git push`.
+
+| Problem | How the Repo Solves It |
+|---|---|
+| Training is manual and non-reproducible | DVC versioning + GitHub Actions trains on every push |
+| No way to roll back a bad model | Model Registry versions artifacts with metadata; rollback is a pointer swap |
+| Deploying is copy-paste | Docker + docker-compose gives repeatable deployment |
+| No visibility into inference | Prometheus metrics (latency, errors, drift) + OpenTelemetry traces (token counts, model params) |
+| Can't debug a bad prediction | Every request has a UUID; traces show exact model, params, tokens, and timing |
+| Prompt-based LLMs need specific infra | FastAPI serves any Hugging Face model via `MODEL_NAME` env var |
+
+## System Architecture
 
 ```mermaid
 flowchart TB
@@ -58,6 +73,10 @@ flowchart TB
         PROM --> LATENCY[Prediction Latency]
         PROM --> COUNTS[Request / Error Counts]
         PROM --> GAUGES[Memory / CPU / Drift]
+        PREDICT --> OTel[OTEL + OpenLIT]
+        OTel --> COLLECTOR[OTEL Collector]
+        COLLECTOR --> TEMPO[Grafana Tempo Traces]
+        COLLECTOR --> PROM
     end
     class OBS obs
 
@@ -66,44 +85,36 @@ flowchart TB
     CI_CD --> SERVE
     SERVE --> OBS
     REG -.-> API
+    TEMPO -.-> GRAFANA[Grafana Dashboard]
+    PROM -.-> GRAFANA
 ```
 
-## Capabilities
+## Monitoring — What Each Component Does
 
-| Area | What It Does |
+| Component | Type | What It Measures | How You Use It |
+|---|---|---|---|
+| **Prometheus** (`/metrics`) | In-process metrics | Request rate, p50/p95/p99 latency, error count by reason, model loaded status, drift detected, memory/cpu/threads, uptime | `curl /metrics` or point any Prometheus scraper. Always works even if external services are down. |
+| **OpenTelemetry (custom span)** | Traces per request | Model name, provider, input/output token count, temperature/top_p/top_k/max_tokens, finish reason, generation duration | Query in Grafana Tempo: `{ gen_ai.operation.name = "chat" }` to find a specific prediction and see exactly what params and how many tokens were used. |
+| **OpenLIT** | Auto-instrumentation | Automatically captures spans from supported LLM SDKs (OpenAI, HuggingFace, LangChain, etc.) without per-call code | No-op if the SDK isn't used; auto-exports to the same OTEL Collector alongside custom spans. |
+| **Grafana Tempo** | Trace storage | Stores and indexes all OTel spans for TraceQL queries | Link from Grafana dashboard. Drill from a slow request metric into the exact trace. |
+| **Grafana** | Dashboards | Unifies Prometheus metrics + Tempo traces | Pre-provisioned LLM dashboard shows request rate, latency p50/p95/p99, token usage, error rate, drift, memory/cpu, and recent traces. No login required at `http://<deploy-host>:3000`. |
+
+**The key distinction**: Prometheus tells you *whether* something is wrong (latency spike, error rate up). OpenTelemetry tells you *which specific request* caused it and why (exact tokens, params, and timing). You need both.
+
+## How Components Connect
+
+| Flow | Path |
 |---|---|
-| **Data Versioning** | DVC tracks datasets and model artifacts outside Git, enabling reproducible pipelines |
-| **Automated CI/CD** | GitHub Actions trains, tests, builds Docker images, and validates live endpoints on every push |
-| **Model Registry** | Custom versioning system with deployment logic and rollback support |
-| **REST API** | FastAPI with Pydantic validation, structured error handling, and health checks |
-| **Containerization** | Docker + docker-compose for reproducible, portable deployment |
-| **Observability** | 12+ Prometheus metrics: latency, error rates, drift detection, resource usage |
-| **Testing** | 4-tier test pyramid: unit, integration, model, and DVC pipeline tests |
-| **Drift Detection** | Runtime feature drift analysis with Prometheus-exported drift gauges |
+| **Code → CI/CD** | Developer pushes to GitHub → GitHub Actions triggers train → test → build → smoke-test |
+| **CI/CD → Registry** | Trained model artifacts are versioned in the Model Registry with metadata and rollback support |
+| **CI/CD → Serving** | Docker image is built and deployed as a FastAPI server exposing `/predict`, `/health`, `/metrics` |
+| **Serving → Observability** | `/predict` emits Prometheus metrics (latency, errors) and OpenTelemetry GenAI traces (token counts, model params) |
+| **OTEL → Collector → Tempo** | OpenLIT + custom spans send traces via OTLP to the OpenTelemetry Collector, which forwards to Tempo for distributed tracing |
+| **Collector → Prometheus** | The collector also exposes OTEL metrics as Prometheus-format endpoints |
+| **Prometheus + Tempo → Grafana** | Grafana queries both for unified dashboards (request rate, latency percentiles, token usage, traces) |
+| **Registry → Serving** | The active model version is loaded by the FastAPI server at startup |
 
-## Key Engineering Decisions
-
-| Decision | Rationale |
-|---|---|
-| **Stateless API** | Horizontally scalable behind any load balancer; no session affinity needed |
-| **In-memory model cache** | Singleton avoids per-request reload overhead |
-| **Graceful degradation** | `/health` returns `degraded` when model is unavailable instead of crashing |
-| **Request ID middleware** | Every request gets a UUID for traceability across logs, errors, and responses |
-| **Pydantic input validation** | Malformed requests are rejected at the boundary before reaching model logic |
-| **Prometheus histograms** | Latency percentiles (p50/p95/p99) are computable from `/metrics` |
-| **Prompt-based LLM inference** | Supports any Hugging Face model via `MODEL_NAME` env variable |
-
-## CI/CD Pipeline
-
-Every push to `main` triggers:
-
-1. **Setup** — Python 3.9, install dependencies
-2. **Train** — `python src/train.py`, saves model to `artifacts/`
-3. **Test** — `pytest tests/ -v` (unit, integration, model, DVC)
-4. **Build** — `docker build` produces a production image
-5. **Validate** — container starts, smoke-tests `/health` and `/predict`
-
-## API
+## Quick Reference
 
 | Endpoint | Purpose |
 |---|---|
@@ -113,82 +124,37 @@ Every push to `main` triggers:
 | `GET /drift-status` | Latest drift detection summary |
 | `GET /docs` | Interactive Swagger UI |
 
-**POST /predict**
-```json
-// Request                          // Response
-{                                   {
-  "prompt": "Hello",                  "generated_text": "...",
-  "max_new_tokens": 100,              "model_version": "Qwen/Qwen2.5-0.5B-Instruct"
-  "temperature": 0.7                }
-}
-```
-
-## Observability
-
-All metrics export at `GET /metrics` for Prometheus scraping:
-
-- **Latency**: `ml_prediction_duration_seconds` (histogram)
-- **Volume**: `ml_predictions_total`, `api_requests_total` (counters)
-- **Errors**: `api_errors_total`, `ml_prediction_errors_total` (counters by reason/type)
-- **Model**: `ml_model_loaded` (gauge), `ml_model_load_total` (counter)
-- **Drift**: `ml_drift_detected`, `ml_drifted_feature_count` (gauges)
-- **Resources**: `process_memory_rss_bytes`, `process_cpu_percent`, `process_thread_count` (gauges)
-
-## Testing
-
-```
-Unit Tests  →  Integration Tests  →  Model Tests  →  DVC Tests  →  CI/CD Smoke Tests
-```
-
-Every layer validates the pipeline from individual components through to the deployed container.
-
-## Project Structure
-
-```
-├── app/                  # FastAPI application
-│   ├── main.py           # Routes, middleware, Prometheus instrumentation
-│   └── schemas.py        # Pydantic request/response models
-├── src/                  # ML logic
-│   ├── train.py          # Model training
-│   └── model_registry.py # Versioning, load logic, rollback
-├── tests/                # Test suite
-├── artifacts/            # Model storage (DVC-tracked)
-├── .github/workflows/    # CI/CD definitions
-├── dvc.yaml              # DVC pipeline
-├── Dockerfile            # Container image
-└── docker-compose.yml    # Local deployment
-```
-
-## Quick Start
-
 ```bash
-git clone <repo-url>
-cd mlops-model-ci-cd
-bash setup_env.sh
-source .venv/Scripts/activate
-dvc repro                  # Train model
-pytest tests/ -v           # Run tests
-uvicorn app.main:app --reload  # Start API
-```
-
-## Docker
-
-```bash
+# Run full stack
 docker-compose up --build
+
+# Or run locally
+uvicorn app.main:app --reload
+
+# Query the API (set BASE_URL to your deployment, default: http://localhost:8000)
+export BASE_URL="${BASE_URL:-http://localhost:8000}"
+curl $BASE_URL/health
+curl -X POST $BASE_URL/predict \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "What is MLOps?", "max_new_tokens": 50}'
+curl $BASE_URL/metrics
 ```
 
-## Documentation
+| Service | Default URL |
+|---|---|
+| API | `{BASE_URL}` (default `http://localhost:8000`) |
+| Grafana | `http://<deploy-host>:3000` (default `http://localhost:3000`) |
+| Prometheus | `http://<deploy-host>:9090` |
+| Tempo | `http://<deploy-host>:3200` |
+
+## Docs
 
 | Guide | Description |
 |---|---|
-| [Architecture Deep Dive](docs/architecture.md) | Component diagrams, data flow, technology choices |
+| [Architecture](docs/architecture.md) | Component diagrams, data flow, technology choices |
 | [API Reference](docs/api.md) | Full endpoint documentation with examples |
 | [CI/CD Pipeline](docs/ci-cd.md) | Workflow stages and local simulation |
 | [Setup Guide](docs/setup.md) | Installation, configuration, troubleshooting |
-| [Monitoring](docs/monitoring.md) | Metrics reference and health checks |
+| [Monitoring](docs/monitoring.md) | Metrics, traces, OpenLIT, and dashboards |
 | [DVC Guide](docs/dvc.md) | Data versioning commands and best practices |
 | [Model Registry](docs/model-registry.md) | Versioning, deployment, rollback |
-
-## License
-
-MIT

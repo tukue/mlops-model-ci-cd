@@ -1,0 +1,116 @@
+{
+  "title": "LLM Observability",
+  "uid": "llm-observability",
+  "version": 1,
+  "tags": ["llm", "openlit", "opentelemetry"],
+  "schemaVersion": 39,
+  "panels": [
+    {
+      "title": "Request Rate",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "rate(api_requests_total[1m])",
+          "legendFormat": "requests/s"
+        }
+      ]
+    },
+    {
+      "title": "Prediction Latency (p50 / p95 / p99)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 0 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(ml_prediction_duration_seconds_bucket[1m])) by (le))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(ml_prediction_duration_seconds_bucket[1m])) by (le))",
+          "legendFormat": "p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(ml_prediction_duration_seconds_bucket[1m])) by (le))",
+          "legendFormat": "p99"
+        }
+      ]
+    },
+    {
+      "title": "Token Usage (Input vs Output)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 0 },
+      "targets": [
+        {
+          "expr": "rate(openlit_gen_ai_client_token_usage_sum{trace_sdk_id=~".*"}[1m])",
+          "legendFormat": "tokens/s"
+        }
+      ]
+    },
+    {
+      "title": "Error Rate",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 8 },
+      "targets": [
+        {
+          "expr": "rate(ml_prediction_errors_total[1m])",
+          "legendFormat": "errors/s"
+        }
+      ]
+    },
+    {
+      "title": "Model Loaded",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 4, "x": 8, "y": 8 },
+      "targets": [
+        {
+          "expr": "ml_model_loaded"
+        }
+      ]
+    },
+    {
+      "title": "Drift Status",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 4, "x": 12, "y": 8 },
+      "targets": [
+        {
+          "expr": "ml_drift_detected"
+        }
+      ]
+    },
+    {
+      "title": "Resource Usage (Memory / CPU)",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 8 },
+      "targets": [
+        {
+          "expr": "process_memory_rss_bytes",
+          "legendFormat": "memory (bytes)"
+        },
+        {
+          "expr": "process_cpu_percent",
+          "legendFormat": "cpu (%)"
+        }
+      ]
+    },
+    {
+      "title": "Recent Traces",
+      "type": "traces",
+      "datasource": { "type": "tempo", "uid": "tempo" },
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 16 },
+      "targets": [
+        {
+          "query": "{service.name=\"mlops-llm-api\"}",
+          "queryType": "traceql",
+          "limit": 20
+        }
+      ]
+    }
+  ]
+}

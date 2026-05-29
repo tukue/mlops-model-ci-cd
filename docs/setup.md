@@ -1,5 +1,11 @@
 # Setup Guide
 
+> All API examples use `http://localhost:8000`. For a remote deployment, set `BASE_URL` and substitute:
+> ```bash
+> export BASE_URL=http://your-domain:8000
+> curl ${BASE_URL:-http://localhost:8000}/health
+> ```
+
 ## Prerequisites
 
 - Python 3.9+
@@ -39,16 +45,18 @@ uvicorn app.main:app --reload
 ### 5. Verify
 
 ```bash
+BASE_URL="${BASE_URL:-http://localhost:8000}"
+
 # Health check
-curl http://localhost:8000/health
+curl $BASE_URL/health
 
 # Prediction
-curl -X POST http://localhost:8000/predict \
+curl -X POST $BASE_URL/predict \
   -H "Content-Type: application/json" \
   -d '{"prompt": "Hello!", "max_new_tokens": 30}'
 
 # Metrics
-curl http://localhost:8000/metrics
+curl $BASE_URL/metrics
 ```
 
 ---

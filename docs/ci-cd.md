@@ -78,6 +78,8 @@ Triggered manually via `workflow_dispatch` for LLM fine-tuning:
 ## Local CI Simulation
 
 ```bash
+BASE_URL="${BASE_URL:-http://localhost:8000}"
+
 # Run tests
 pytest tests/ -v
 
@@ -85,6 +87,6 @@ pytest tests/ -v
 docker build -t mlops-api .
 docker run -d --name mlops-test -p 8000:8000 mlops-api
 sleep 10
-curl http://localhost:8000/health
+curl $BASE_URL/health
 docker stop mlops-test && docker rm mlops-test
 ```

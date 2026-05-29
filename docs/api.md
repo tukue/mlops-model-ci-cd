@@ -1,6 +1,9 @@
 # API Reference
 
-Base URL: `http://localhost:8000`
+> All examples use `http://localhost:8000`. Replace with your deployment URL.
+> Set `BASE_URL=http://your-domain:8000` and substitute in commands.
+
+**Default Base URL**: `http://localhost:8000`
 
 ## Endpoints
 
@@ -75,7 +78,7 @@ Run model inference with configurable generation parameters.
 
 **Example**
 ```bash
-curl -X POST http://localhost:8000/predict \
+curl -X POST ${BASE_URL:-http://localhost:8000}/predict \
   -H "Content-Type: application/json" \
   -d '{"prompt": "Hello, world!", "max_new_tokens": 30}'
 ```

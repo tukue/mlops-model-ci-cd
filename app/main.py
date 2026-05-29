@@ -14,6 +14,8 @@ from fastapi.responses import JSONResponse, Response
 from app.schemas import PredictRequest, PredictResponse
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 
+
+
 torch = None
 AutoModelForCausalLM = None
 AutoTokenizer = None
@@ -68,6 +70,62 @@ MODEL_NAME = os.environ.get("MODEL_NAME", DEFAULT_MODEL_NAME)
 MODEL_PATH = Path(os.environ.get("MODEL_PATH", Path(__file__).parent.parent / "artifacts" / "Qwen2.5-0.5B-Instruct"))
 DRIFT_REPORT_PATH = Path(os.environ.get("DRIFT_REPORT_PATH", Path(__file__).parent.parent / "artifacts" / "drift_report.json"))
 SKIP_MODEL_LOAD_ON_STARTUP = os.getenv("SKIP_MODEL_LOAD_ON_STARTUP", "").lower() in {"1", "true", "yes"}
+SKIP_TELEMETRY = os.getenv("SKIP_TELEMETRY", "").lower() in {"1", "true", "yes"}
+
+# ---------------------------------------------------------------------------
+# OpenTelemetry + OpenLIT initialization
+# ---------------------------------------------------------------------------
+OTEL_SERVICE_NAME = os.getenv("OTEL_SERVICE_NAME", "mlops-llm-api")
+OTEL_OTLP_ENDPOINT = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://otel-collector:4318")
+
+
+class _NoopSpan:
+    def __enter__(self): return self
+    def __exit__(self, *a): pass
+    def set_attribute(self, k, v): pass
+
+
+class _NoopTracer:
+    def start_as_current_span(self, name): return _NoopSpan()
+
+
+TRACER: object = _NoopTracer()
+
+
+def setup_telemetry():
+    try:
+        import socket
+        socket.setdefaulttimeout(5)
+
+        from opentelemetry import trace as _trace
+        from opentelemetry.sdk.resources import Resource
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+        import openlit
+
+        resource = Resource.create({"service.name": OTEL_SERVICE_NAME})
+        provider = TracerProvider(resource=resource)
+        span_processor = BatchSpanProcessor(
+            OTLPSpanExporter(endpoint=f"{OTEL_OTLP_ENDPOINT}/v1/traces", timeout=5)
+        )
+        provider.add_span_processor(span_processor)
+        _trace.set_tracer_provider(provider)
+
+        openlit.init(
+            service_name=OTEL_SERVICE_NAME,
+            otlp_endpoint=OTEL_OTLP_ENDPOINT,
+            environment=os.getenv("ENVIRONMENT", "production"),
+        )
+
+        global TRACER
+        TRACER = _trace.get_tracer(__name__)
+        logger.info("opentelemetry_and_openlit_initialized endpoint=%s", OTEL_OTLP_ENDPOINT)
+    except Exception:
+        logger.exception("opentelemetry_init_failed endpoint=%s", OTEL_OTLP_ENDPOINT)
+        raise
+
+# ---------------------------------------------------------------------------
 
 _tokenizer = None
 _model = None
@@ -255,6 +313,9 @@ async def track_requests(request: Request, call_next):
 
 @app.on_event("startup")
 def startup_event():
+    if not SKIP_TELEMETRY:
+        setup_telemetry()
+
     if SKIP_MODEL_LOAD_ON_STARTUP:
         logger.info("skipping_model_load_on_startup")
         return
@@ -322,22 +383,37 @@ def predict(req: PredictRequest):
             inputs = tokenizer([text], return_tensors="pt")
 
             input_length = inputs.input_ids.shape[1]
+            input_token_count = input_length
 
-            no_grad = torch.no_grad() if torch is not None else nullcontext()
-            with no_grad:
-                outputs = model.generate(
-                    **inputs,
-                    max_new_tokens=req.max_new_tokens,
-                    temperature=req.temperature,
-                    do_sample=True,
-                    top_k=req.top_k, # Use top_k from the request
-                    top_p=req.top_p,
-                    pad_token_id=tokenizer.eos_token_id
-                )
+            with TRACER.start_as_current_span("chat") as span:
+                span.set_attribute("gen_ai.operation.name", "chat")
+                span.set_attribute("gen_ai.provider.name", "huggingface")
+                span.set_attribute("gen_ai.request.model", MODEL_NAME)
+                span.set_attribute("gen_ai.request.max_tokens", req.max_new_tokens)
+                span.set_attribute("gen_ai.request.temperature", req.temperature)
+                span.set_attribute("gen_ai.request.top_p", req.top_p)
+                span.set_attribute("gen_ai.request.top_k", req.top_k)
+                span.set_attribute("gen_ai.usage.input_tokens", input_token_count)
 
-            # Slice the output to remove the input prompt tokens
-            generated_tokens = outputs[0][input_length:]
-            generated_text = tokenizer.decode(generated_tokens, skip_special_tokens=True)
+                no_grad = torch.no_grad() if torch is not None else nullcontext()
+                with no_grad:
+                    outputs = model.generate(
+                        **inputs,
+                        max_new_tokens=req.max_new_tokens,
+                        temperature=req.temperature,
+                        do_sample=True,
+                        top_k=req.top_k,
+                        top_p=req.top_p,
+                        pad_token_id=tokenizer.eos_token_id
+                    )
+
+                generated_tokens = outputs[0][input_length:]
+                output_token_count = len(generated_tokens)
+                generated_text = tokenizer.decode(generated_tokens, skip_special_tokens=True)
+
+                span.set_attribute("gen_ai.usage.output_tokens", output_token_count)
+                span.set_attribute("gen_ai.response.model", MODEL_NAME)
+                span.set_attribute("gen_ai.response.finish_reasons", ["stop"])
 
             PREDICTION_COUNT.inc()
             PREDICTION_CLASS_DISTRIBUTION.labels(
