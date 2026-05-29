@@ -230,36 +230,6 @@ Unit Tests  →  Integration Tests  →  Model Tests  →  DVC Tests  →  CI/CD
 
 Every layer validates the pipeline from individual components through to the deployed container.
 
-## Project Structure
-
-```
-├── app/                    # FastAPI application
-│   ├── main.py             # Routes, middleware, OTEL + OpenLIT instrumentation
-│   └── schemas.py          # Pydantic request/response models
-├── src/                    # ML logic
-│   ├── train.py            # Model training
-│   └── model_registry.py   # Versioning, load logic, rollback
-├── tests/                  # Test suite
-│   ├── test_app.py         # API integration tests
-│   ├── test_telemetry.py   # OpenTelemetry span attribute verification
-│   ├── test_mlflow.py      # MLflow tracking tests
-│   ├── test_drift.py       # Drift detection tests
-│   ├── test_dvc.py         # DVC pipeline tests
-│   └── test_model.py       # Model tests
-├── artifacts/              # Model storage (DVC-tracked)
-├── grafana/                # Grafana provisioning
-│   └── provisioning/
-│       ├── dashboards/
-│       └── datasources/
-├── .github/workflows/      # CI/CD definitions
-├── dvc.yaml                # DVC pipeline
-├── Dockerfile              # Container image
-├── docker-compose.yml      # Local deployment (API + OTEL + Tempo + Prometheus + Grafana)
-├── otel-collector-config.yml
-├── prometheus.yml
-└── tempo.yml
-```
-
 ## Quick Start
 
 ```bash
