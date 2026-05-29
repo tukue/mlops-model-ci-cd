@@ -2,68 +2,89 @@ name: MLOps CI/CD
 
 on:
   push:
-    branches: [ main, feature/update-chat-model ]
+    branches: [ main ]
   pull_request:
     branches: [ main ]
 
 jobs:
-  test:
+  build-and-test:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+    - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.9"
+    - name: Set up Python 3.9
+      uses: actions/setup-python@v5
+      with:
+        python-version: 3.9
 
-      - uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        if [ -f requirements.txt ]; then python -m pip install -r requirements.txt; fi
+        # Ensure pytest and httpx are installed for tests
+        python -m pip install pytest httpx
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt pytest pytest-xdist httpx
+    - name: Initialize DVC (for CI environment)
+      run: |
+        dvc init --no-scm
+        # Ensure artifacts directory exists
+        mkdir -p artifacts
 
-      - name: Run tests
-        run: |
-          mkdir -p artifacts
-          pytest tests/ -v -n auto
+    - name: Run Tests (Unit, Integration)
+      run: |
+        pytest tests/ -v
 
-  docker-build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+    - name: Build Docker Image
+      run: |
+        docker build -t mlops-api .
+        
+    - name: Test API Endpoints (in Docker)
+      run: |
+        # Run the Docker container
+        # Map port 8000 to 8000
+        docker run -d --name mlops-api-container -p 8000:8000 -e MODEL_NAME="google/flan-t5-small" mlops-api
+        
+        # Wait for API startup
+        # Add an initial sleep to allow the container to start
+        sleep 10
+        STARTUP_SUCCESS=false
+        for i in {1..60}; do
+          # Add --connect-timeout to curl to give it a chance to connect
+          if curl -sSf --connect-timeout 2 http://127.0.0.1:8000/health > /dev/null; then
+            STARTUP_SUCCESS=true
+            break
+          fi
+          sleep 1
+        done
 
-      - name: Download tiny test model
-        run: |
-          pip install huggingface_hub
-          python3 -c "
-from huggingface_hub import snapshot_download
-snapshot_download('hf-internal-testing/tiny-random-gpt2', local_dir='artifacts/tiny-model')
-"
-
-      - name: Build Docker image
-        run: docker build -t mlops-api .
-
-      - name: Smoke test (health only)
-        run: |
-          docker run -d --name mlops-api-container -p 8000:8000 \
-            -e SKIP_TELEMETRY=1 \
-            -e MODEL_PATH=/app/artifacts/tiny-model \
-            -e MODEL_NAME=tiny-random-gpt2 \
-            mlops-api
-          for i in {1..30}; do
-            if curl -sSf --connect-timeout 2 http://127.0.0.1:8000/health > /dev/null; then
-              echo "Health OK"
-              docker stop mlops-api-container && docker rm mlops-api-container
-              exit 0
-            fi
-            sleep 1
-          done
+        if [ "$STARTUP_SUCCESS" = "false" ]; then
+          echo "API failed to start within timeout"
           docker logs mlops-api-container
-          docker stop mlops-api-container && docker rm mlops-api-container
+          docker stop mlops-api-container
+          docker rm mlops-api-container
           exit 1
+        fi
+        
+        # Test and validate endpoints
+        ROOT_JSON=$(curl -sSf http://127.0.0.1:8000/)
+        echo "$ROOT_JSON" | python -c 'import json,sys; data=json.load(sys.stdin); assert "/predict" in data["endpoints"]'
+
+        HEALTH_JSON=$(curl -sSf http://127.0.0.1:8000/health)
+        echo "$HEALTH_JSON" | python -c 'import json,sys; data=json.load(sys.stdin); assert data["status"] in ("ok","degraded"); assert "model_ready" in data'
+
+        curl -sSf http://127.0.0.1:8000/docs > /dev/null
+
+        METRICS_TEXT=$(curl -sSf http://127.0.0.1:8000/metrics)
+        echo "$METRICS_TEXT" | grep -q "api_request_duration_seconds"
+        echo "$METRICS_TEXT" | grep -q "process_memory_rss_bytes"
+        
+        # Test prediction with text prompt
+        PREDICT_JSON=$(curl -sSf -X POST http://127.0.0.1:8000/predict \
+          -H "Content-Type: application/json" \
+          -d '{"prompt": "Hello, world!", "max_new_tokens": 10}')
+        echo "$PREDICT_JSON" | python -c 'import json,sys; data=json.load(sys.stdin); assert "generated_text" in data; print(data["generated_text"])'
+        
+        # Stop and remove container
+        docker stop mlops-api-container
+        docker rm mlops-api-container
