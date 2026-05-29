@@ -12,10 +12,3 @@ accelerate
 transformers>=4.37.2
 torch>=2.2.0
 sentencepiece
-# OpenTelemetry
-opentelemetry-sdk>=1.30.0
-opentelemetry-exporter-otlp-proto-http>=1.30.0
-opentelemetry-instrumentation-fastapi>=0.51b0
-opentelemetry-api>=1.30.0
-# OpenLIT - LLM observability auto-instrumentation
-openlit>=1.30.0
