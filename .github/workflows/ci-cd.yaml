@@ -41,8 +41,10 @@ jobs:
       - name: Download tiny test model
         run: |
           pip install huggingface_hub
-          huggingface-cli download hf-internal-testing/tiny-random-gpt2 \
-            --local-dir artifacts/tiny-model
+          python3 -c "
+from huggingface_hub import snapshot_download
+snapshot_download('hf-internal-testing/tiny-random-gpt2', local_dir='artifacts/tiny-model')
+"
 
       - name: Build Docker image
         run: docker build -t mlops-api .
