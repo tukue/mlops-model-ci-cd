@@ -1,6 +1,7 @@
 import os
 
 os.environ["SKIP_MODEL_LOAD_ON_STARTUP"] = "1"
+os.environ["SKIP_TELEMETRY"] = "1"
 
 from fastapi.testclient import TestClient
 

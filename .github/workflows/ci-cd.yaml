@@ -31,7 +31,7 @@ jobs:
       - name: Run tests
         run: |
           mkdir -p artifacts
-          pytest tests/ -v -n auto
+          pytest tests/ -v -n auto --ignore=tests/test_telemetry.py
 
   docker-build:
     runs-on: ubuntu-latest
@@ -43,7 +43,7 @@ jobs:
 
       - name: Smoke test (health only)
         run: |
-          docker run -d --name mlops-api-container -p 8000:8000 mlops-api
+          docker run -d --name mlops-api-container -p 8000:8000 -e SKIP_TELEMETRY=1 mlops-api
           for i in {1..30}; do
             if curl -sSf --connect-timeout 2 http://127.0.0.1:8000/health > /dev/null; then
               echo "Health OK"

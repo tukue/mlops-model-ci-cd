@@ -70,6 +70,7 @@ MODEL_NAME = os.environ.get("MODEL_NAME", DEFAULT_MODEL_NAME)
 MODEL_PATH = Path(os.environ.get("MODEL_PATH", Path(__file__).parent.parent / "artifacts" / "Qwen2.5-0.5B-Instruct"))
 DRIFT_REPORT_PATH = Path(os.environ.get("DRIFT_REPORT_PATH", Path(__file__).parent.parent / "artifacts" / "drift_report.json"))
 SKIP_MODEL_LOAD_ON_STARTUP = os.getenv("SKIP_MODEL_LOAD_ON_STARTUP", "").lower() in {"1", "true", "yes"}
+SKIP_TELEMETRY = os.getenv("SKIP_TELEMETRY", "").lower() in {"1", "true", "yes"}
 
 # ---------------------------------------------------------------------------
 # OpenTelemetry + OpenLIT initialization
@@ -112,7 +113,6 @@ def setup_telemetry():
             service_name=OTEL_SERVICE_NAME,
             otlp_endpoint=OTEL_OTLP_ENDPOINT,
             environment=os.getenv("ENVIRONMENT", "production"),
-            disable_content_capture=True,
         )
 
         global TRACER
@@ -310,7 +310,8 @@ async def track_requests(request: Request, call_next):
 
 @app.on_event("startup")
 def startup_event():
-    setup_telemetry()
+    if not SKIP_TELEMETRY:
+        setup_telemetry()
 
     if SKIP_MODEL_LOAD_ON_STARTUP:
         logger.info("skipping_model_load_on_startup")
