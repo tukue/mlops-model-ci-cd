@@ -134,41 +134,93 @@ Every push to `main` triggers:
 
 ## Observability
 
+### How LLM Monitoring Is Implemented
+
+The monitoring stack has three layers:
+
+**1. Prometheus metrics** (built-in, no external deps)
+- Exported at `GET /metrics` in OpenMetrics text format
+- Every endpoint, prediction, error, drift scan, and resource sample updates counters/histograms/gauges
+- The middleware (`app/main.py:236`) assigns a UUID to every request, measures latency, and increments `api_requests_total`, `api_request_duration_seconds`, `api_errors_total`, and `api_inflight_requests`
+- Prediction metrics track latency (`ml_prediction_duration_seconds`), output length distribution (`ml_prediction_class_distribution_total`), and failure reasons (`ml_prediction_errors_total`)
+
+**2. OpenTelemetry GenAI spans** (`app/main.py:366`)
+- Every `/predict` call wraps `model.generate()` in an OTel span named `"chat"`
+- The span carries standard GenAI semantic convention attributes (`gen_ai.*`): provider, model name, input/output token counts, temperature, top_p, top_k, max_tokens, finish reason
+- These attributes enable TraceQL queries like `{ gen_ai.usage.output_tokens > 500 }` in Grafana Tempo
+- The tracer provider (with `BatchSpanProcessor` + `OTLPSpanExporter`) is initialized at startup and sends spans to the OTEL collector
+
+**3. OpenLIT auto-instrumentation** (`app/main.py:97`)
+- `openlit.init()` at startup auto-patches supported LLM SDKs to emit OTEL traces without per-call code changes
+- Content capture is disabled by default (`disable_content_capture=True`) for privacy — prompt/response payloads are not shipped to the backend
+
+**Telemetry pipeline:**
+```
+FastAPI /predict  ──OTLP──►  OTEL Collector  ──►  Tempo (traces)
+                         │
+                         └──►  Prometheus (metrics)
+                                  │
+                                  ▼
+                              Grafana Dashboard
+```
+The app degrades gracefully if the collector is unreachable (try/except in `setup_telemetry`).
+
 ### Prometheus Metrics
 
-Exported at `GET /metrics`:
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `ml_predictions_total` | Counter | — | Total predictions served |
+| `ml_prediction_duration_seconds` | Histogram | — | Prediction latency distribution |
+| `ml_prediction_errors_total` | Counter | `reason` | Inference failures by reason |
+| `ml_prediction_class_distribution_total` | Counter | `class_name` | Output length (short/medium/long/empty) |
+| `api_requests_total` | Counter | `method`, `endpoint`, `status` | Request volume |
+| `api_request_duration_seconds` | Histogram | `method`, `endpoint` | API latency by route |
+| `api_errors_total` | Counter | `method`, `endpoint`, `exception_type` | Unhandled exceptions |
+| `api_inflight_requests` | Gauge | — | Concurrent request count |
+| `ml_model_load_total` | Counter | `status` | Model load attempts |
+| `ml_model_loaded` | Gauge | — | 1 = loaded, 0 = not loaded |
+| `ml_drift_detected` | Gauge | — | 1 if drift detected, 0 otherwise |
+| `ml_drifted_feature_count` | Gauge | — | Number of drifted features |
+| `process_memory_rss_bytes` | Gauge | — | Resident memory |
+| `process_cpu_percent` | Gauge | — | CPU usage |
+| `process_thread_count` | Gauge | — | Thread count |
+| `service_uptime_seconds` | Gauge | — | Process uptime |
 
-- **Latency**: `ml_prediction_duration_seconds` (histogram)
-- **Volume**: `ml_predictions_total`, `api_requests_total` (counters)
-- **Errors**: `api_errors_total`, `ml_prediction_errors_total` (counters by reason/type)
-- **Model**: `ml_model_loaded` (gauge), `ml_model_load_total` (counter)
-- **Drift**: `ml_drift_detected`, `ml_drifted_feature_count` (gauges)
-- **Resources**: `process_memory_rss_bytes`, `process_cpu_percent`, `process_thread_count` (gauges)
+### OpenTelemetry GenAI Traces
 
-### OpenTelemetry Traces (GenAI Semantic Conventions)
+Every `/predict` produces a `chat` span with these attributes:
 
-Every `/predict` LLM call produces a trace span with:
-
-| Attribute | Value |
-|---|---|
-| `gen_ai.operation.name` | `chat` |
-| `gen_ai.provider.name` | `huggingface` |
-| `gen_ai.request.model` | Model name (e.g. `Qwen/Qwen2.5-0.5B-Instruct`) |
-| `gen_ai.usage.input_tokens` | Prompt token count |
-| `gen_ai.usage.output_tokens` | Generated token count |
-| `gen_ai.request.temperature` | Sampling temperature |
-| `gen_ai.request.top_p` | Top-p sampling |
-| `gen_ai.request.top_k` | Top-k sampling |
-| `gen_ai.request.max_tokens` | Max new tokens |
-| `gen_ai.response.finish_reasons` | Completion reason |
+| Attribute | Source | Purpose |
+|---|---|---|
+| `gen_ai.operation.name` | Hardcoded: `"chat"` | Identifies GenAI operation type |
+| `gen_ai.provider.name` | Hardcoded: `"huggingface"` | LLM provider identifier |
+| `gen_ai.request.model` | `MODEL_NAME` env var | Model requested by the client |
+| `gen_ai.request.max_tokens` | `req.max_new_tokens` | Generation length limit |
+| `gen_ai.request.temperature` | `req.temperature` | Sampling temperature |
+| `gen_ai.request.top_p` | `req.top_p` | Nucleus sampling threshold |
+| `gen_ai.request.top_k` | `req.top_k` | Top-k sampling |
+| `gen_ai.usage.input_tokens` | `len(inputs.input_ids[0])` | Prompt token count (cost driver) |
+| `gen_ai.usage.output_tokens` | `len(generated_tokens)` | Generated token count (cost driver) |
+| `gen_ai.response.model` | `MODEL_NAME` env var | Model that actually served |
+| `gen_ai.response.finish_reasons` | `["stop"]` | Why generation finished |
 
 ### OpenLIT Auto-instrumentation
 
-[OpenLIT](https://github.com/openlit/openlit) automatically instruments supported LLM SDK calls (OpenAI, Hugging Face, LangChain, etc.) and exports traces via OTLP.
+[OpenLIT](https://github.com/openlit/openlit) automatically captures traces for supported SDKs (OpenAI, Anthropic, Hugging Face, LangChain, LlamaIndex, etc.) without any per-call code.
 
 ### Grafana + Tempo Dashboard
 
-Run the full stack with `docker-compose up` and open **`http://<deploy-host>:3000`** (default: `http://localhost:3000`, no login required) to see metrics and traces.
+Run the full stack:
+```bash
+docker-compose up --build
+```
+
+| Service | URL | Purpose |
+|---|---|---|
+| API | `http://localhost:8000` | FastAPI prediction endpoints |
+| Grafana | `http://localhost:3000` | Dashboards (no login) |
+| Prometheus | `http://localhost:9090` | Metrics |
+| Tempo | `http://localhost:3200` | Distributed traces |
 
 ## Testing
 
@@ -188,6 +240,12 @@ Every layer validates the pipeline from individual components through to the dep
 │   ├── train.py            # Model training
 │   └── model_registry.py   # Versioning, load logic, rollback
 ├── tests/                  # Test suite
+│   ├── test_app.py         # API integration tests
+│   ├── test_telemetry.py   # OpenTelemetry span attribute verification
+│   ├── test_mlflow.py      # MLflow tracking tests
+│   ├── test_drift.py       # Drift detection tests
+│   ├── test_dvc.py         # DVC pipeline tests
+│   └── test_model.py       # Model tests
 ├── artifacts/              # Model storage (DVC-tracked)
 ├── grafana/                # Grafana provisioning
 │   └── provisioning/
