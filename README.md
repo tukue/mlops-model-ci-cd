@@ -118,14 +118,22 @@ docker-compose up --build
 
 # Or run locally
 uvicorn app.main:app --reload
+
+# Query the API (set BASE_URL to your deployment, default: http://localhost:8000)
+export BASE_URL="${BASE_URL:-http://localhost:8000}"
+curl $BASE_URL/health
+curl -X POST $BASE_URL/predict \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "What is MLOps?", "max_new_tokens": 50}'
+curl $BASE_URL/metrics
 ```
 
-| Service | URL |
+| Service | Default URL |
 |---|---|
-| API | `http://localhost:8000` |
-| Grafana | `http://localhost:3000` |
-| Prometheus | `http://localhost:9090` |
-| Tempo | `http://localhost:3200` |
+| API | `{BASE_URL}` (default `http://localhost:8000`) |
+| Grafana | `http://<deploy-host>:3000` (default `http://localhost:3000`) |
+| Prometheus | `http://<deploy-host>:9090` |
+| Tempo | `http://<deploy-host>:3200` |
 
 ## Docs
 
