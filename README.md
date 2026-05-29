@@ -6,6 +6,21 @@ End-to-end ML lifecycle automation: versioned data pipelines, automated training
 
 ---
 
+## Problem & Solution
+
+Managing ML models in production is messy. Training is manual, deployments are copy-paste, and when inference breaks there is no visibility into why.
+
+This repo automates the entire ML lifecycle so you can **train, deploy, serve, and observe** an LLM with a single `git push`.
+
+| Problem | How the Repo Solves It |
+|---|---|
+| Training is manual and non-reproducible | DVC versioning + GitHub Actions trains on every push |
+| No way to roll back a bad model | Model Registry versions artifacts with metadata; rollback is a pointer swap |
+| Deploying is copy-paste | Docker + docker-compose gives repeatable deployment |
+| No visibility into inference | Prometheus metrics (latency, errors, drift) + OpenTelemetry traces (token counts, model params) |
+| Can't debug a bad prediction | Every request has a UUID; traces show exact model, params, tokens, and timing |
+| Prompt-based LLMs need specific infra | FastAPI serves any Hugging Face model via `MODEL_NAME` env var |
+
 ## System Architecture
 
 ```mermaid
