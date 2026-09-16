@@ -125,7 +125,9 @@ All Prometheus metrics are exported at `GET /metrics`:
 ### Shadow Deployment Metrics
 
 Tracks "dark launch" traffic: a candidate model that runs alongside the active
-model on live requests without affecting responses.
+model on live requests without affecting responses. Shadow records are written
+to `artifacts/shadow/shadow_log.jsonl` with prompts/responses SHA-256 hashed;
+raw PII is never logged.
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|

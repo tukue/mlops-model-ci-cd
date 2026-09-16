@@ -1,4 +1,5 @@
 import json
+import os
 
 from fastapi.testclient import TestClient
 from app.main import app
@@ -9,6 +10,8 @@ from app.shadow import (
     ShadowLogStore,
     ShadowPredictor,
     ShadowResult,
+    _MAX_SHADOW_TOKENS,
+    _redact_for_log,
     compare_outputs,
 )
 
@@ -89,6 +92,8 @@ class _FakeModel:
 
 
 # ---------------------------------------------------------------------------
+# Unit tests: helpers
+# ---------------------------------------------------------------------------
 
 
 def test_compare_outputs():
@@ -96,6 +101,56 @@ def test_compare_outputs():
     assert compare_outputs("  alpha beta  ", "alpha  beta") == "identical"
     assert compare_outputs("hello", "goodbye") == "differing"
     assert compare_outputs(None, "hello") == "error"
+
+
+def test_redact_for_log_empty():
+    assert _redact_for_log(None) == ""
+    assert _redact_for_log("") == ""
+
+
+def test_redact_for_log_short():
+    result = _redact_for_log("hello world")
+    # Only a hash is returned; no raw content is preserved
+    assert result != "hello world"
+    assert len(result) == 8  # _PROMPT_HASH_PREFIX
+
+
+def test_redact_for_log_long_text():
+    long = "A" * 200
+    result = _redact_for_log(long)
+    assert result == _redact_for_log("A" * 200)
+    assert len(result) == 8
+
+
+def test_redact_for_log_strips_pii():
+    result = _redact_for_log("My SSN is 123-45-6789")
+    assert "123-45-6789" not in result
+
+
+# ---------------------------------------------------------------------------
+# Config validation
+# ---------------------------------------------------------------------------
+
+
+def test_config_validates_negative_queue_max(monkeypatch):
+    monkeypatch.setenv("SHADOW_QUEUE_MAX", "not-a-number")
+    cfg = ShadowConfig.from_env()
+    assert cfg.queue_maxsize == 100  # falls back to default
+
+    monkeypatch.setenv("SHADOW_QUEUE_MAX", "-5")
+    cfg = ShadowConfig.from_env()
+    assert cfg.queue_maxsize == 1  # clamped to min_value
+
+
+def test_config_validates_negative_status_entries(monkeypatch):
+    monkeypatch.setenv("SHADOW_STATUS_ENTRIES", "abc")
+    cfg = ShadowConfig.from_env()
+    assert cfg.status_entries == 50
+
+
+# ---------------------------------------------------------------------------
+# Disabled shadow
+# ---------------------------------------------------------------------------
 
 
 def test_disabled_capture_noop(tmp_path):
@@ -120,6 +175,12 @@ def test_disabled_capture_noop(tmp_path):
     assert status["status"] == "disabled"
     assert status["enabled"] is False
     assert status["processed"] == 0
+    assert status["recent_entries"] == []
+
+
+# ---------------------------------------------------------------------------
+# End-to-end (fake predictor)
+# ---------------------------------------------------------------------------
 
 
 def test_shadow_end_to_end(tmp_path):
@@ -136,7 +197,14 @@ def test_shadow_end_to_end(tmp_path):
     dep = _deployment(tmp_path, predictor)
     dep.start()
 
-    ok = dep.capture(prompt="p", params={"temperature": 0.7}, active_text="hello shadow world", active_tokens=9, request_id="r1", active_model="active-model")
+    ok = dep.capture(
+        prompt="p",
+        params={"temperature": 0.7},
+        active_text="hello shadow world",
+        active_tokens=9,
+        request_id="r1",
+        active_model="active-model",
+    )
 
     assert ok is True
     assert dep.dispatcher.queue_size() == 1
@@ -156,19 +224,25 @@ def test_shadow_end_to_end(tmp_path):
     assert entry["agreement"] == "identical"
     assert entry["active"]["model"] == "active-model"
     assert entry["active"]["tokens"] == 9
-    assert entry["shadow"]["model"] == "candidate-model"
-    assert entry["shadow"]["output_tokens"] == 4
-    assert entry["params"] == {"temperature": 0.7}
+    # PII: raw text must not appear in on-disk log
+    assert "text" not in entry.get("active", {})
+    assert "text" not in entry.get("shadow", {})
+    assert "prompt" not in entry or entry["prompt"] != "p"
 
     status = dep.status()
     assert status["status"] == "ok"
     assert status["enabled"] is True
     assert status["processed"] == 1
     assert status["agreement_identical"] == 1
-    assert status["agreement_differing"] == 0
-    assert len(status["recent_entries"]) == 1
+    # recent_entries are redacted for security
+    assert status["recent_entries"] == []
 
     dep.stop()
+
+
+# ---------------------------------------------------------------------------
+# Predictor internals
+# ---------------------------------------------------------------------------
 
 
 def test_shadow_predictor_run(tmp_path):
@@ -188,6 +262,47 @@ def test_shadow_predictor_run(tmp_path):
     assert predictor.is_loaded
 
 
+def test_predictor_caps_max_new_tokens(tmp_path):
+    config = ShadowConfig(enabled=True, model_name="fake", model_path="", log_path=str(tmp_path / "l.jsonl"))
+    predictor = ShadowPredictor(config)
+    predictor._tokenizer = _FakeTokenizer()
+    predictor._model = _FakeModel()
+    predictor._torch = None
+
+    # FakeModel.generate records kwargs for inspection
+    captured_kwargs = {}
+
+    class _SpyModel:
+        def generate(self, **kwargs):
+            captured_kwargs.update(kwargs)
+            return [[1, 2, 3, 4, 5, 6, 7, 8, 9]]
+
+    predictor._model = _SpyModel()
+
+    predictor.predict("test", {"max_new_tokens": 99999})
+
+    assert captured_kwargs["max_new_tokens"] == _MAX_SHADOW_TOKENS
+
+
+def test_predictor_rejects_out_of_project_path(tmp_path):
+    config = ShadowConfig(
+        enabled=True,
+        model_name="",
+        model_path="/tmp/evil/malicious-model",
+        log_path=str(tmp_path / "l.jsonl"),
+    )
+    predictor = ShadowPredictor(config)
+    import pytest
+
+    with pytest.raises(RuntimeError, match="outside the project root"):
+        predictor._load()
+
+
+# ---------------------------------------------------------------------------
+# Failure isolation
+# ---------------------------------------------------------------------------
+
+
 def test_shadow_failure_isolated(tmp_path):
     predictor = _FakePredictor(exc=RuntimeError("shadow boom"))
     dep = _deployment(tmp_path, predictor)
@@ -204,13 +319,19 @@ def test_shadow_failure_isolated(tmp_path):
     entries = dep.log_store.recent(50)
     assert len(entries) == 1
     assert entries[0]["agreement"] == "error"
-    assert "shadow boom" in entries[0]["shadow"]["error"]
+    # PII: error text and prompt are redacted
+    assert "text" not in entries[0].get("shadow", {})
 
     status = dep.status()
     assert status["failed"] == 1
     assert status["processed"] == 1
 
     dep.stop()
+
+
+# ---------------------------------------------------------------------------
+# Queue overflow
+# ---------------------------------------------------------------------------
 
 
 def test_queue_full_drops(tmp_path):
@@ -228,14 +349,24 @@ def test_queue_full_drops(tmp_path):
     dep.stop()
 
 
+# ---------------------------------------------------------------------------
+# API: /shadow-status endpoint
+# ---------------------------------------------------------------------------
+
+
 def test_shadow_status_endpoint_disabled():
     response = client.get("/shadow-status")
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "disabled"
     assert body["enabled"] is False
-    assert "recent_entries" in body
+    assert body["recent_entries"] == []
     assert "processed" in body
+
+
+# ---------------------------------------------------------------------------
+# API: /predict triggers capture
+# ---------------------------------------------------------------------------
 
 
 def test_predict_triggers_capture_without_model(monkeypatch):

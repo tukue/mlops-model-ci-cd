@@ -27,6 +27,13 @@
     - Added Prometheus metrics: `ml_shadow_requests_total{outcome}`, `ml_shadow_duration_seconds`, `ml_shadow_agreement_total{agreement}`, `ml_shadow_errors_total{error_type}`, `ml_shadow_queue_length`, `ml_shadow_model_loaded`.
     - Shadow failures are isolated and counted; they never affect the client response.
     - Enabled via env vars: `SHADOW_ENABLED=1` plus `SHADOW_MODEL_NAME` (HF id) or `SHADOW_MODEL_PATH` (local artifact dir).
+    - Security hardening:
+        - `SHADOW_MODEL_PATH` is validated to stay inside the project root (CWE-22 path traversal).
+        - Shadow generation caps `max_new_tokens` at 1000 to prevent resource exhaustion (CWE-770).
+        - Shadow models load with `trust_remote_code=False` (no arbitrary remote code execution).
+        - Shadow log records redact prompt/response text to a SHA-256 prefix; `/shadow-status` no longer exposes raw prompts or outputs (CWE-532).
+        - `SHADOW_QUEUE_MAX` / `SHADOW_STATUS_ENTRIES` fall back to safe defaults when non-numeric or non-positive.
+        - Shadow worker starts only after the active model has loaded successfully, and `stop()` handles a still-alive worker gracefully.
 *   [ ]  Automate data validation.
 
 ## Recent Implementation Notes
@@ -35,5 +42,6 @@
 *   Updated inference input to preserve feature names and remove sklearn feature-name mismatch warnings.
 *   Updated API tests to cover new observability endpoints/metrics.
 *   Implemented shadow deployment (`app/shadow.py`): background candidate-model inference with JSONL comparison logging, `/shadow-status`, and Prometheus metrics; wired into `/predict` and lifecycle events.
+*   Hardened shadow deployment: path-traversal validation, `trust_remote_code=False`, capped `max_new_tokens`, PII-redacted JSONL logging, redacted `/shadow-status`, validated env vars, ordered startup, and graceful worker stop.
 *   Hardened `/drift-status` against unreadable report files and invalid JSON payloads.
 *   Removed dead defensive code from model loading after import-time dependency checks were simplified.

@@ -321,16 +321,17 @@ def startup_event():
     if not SKIP_TELEMETRY:
         setup_telemetry()
 
-    SHADOW.start()
-
     if SKIP_MODEL_LOAD_ON_STARTUP:
         logger.info("skipping_model_load_on_startup")
+        SHADOW.start()
         return
 
     try:
         get_model()
     except Exception:
         logger.critical("could_not_load_model_on_startup")
+
+    SHADOW.start()
 
 @app.on_event("shutdown")
 def shutdown_event():

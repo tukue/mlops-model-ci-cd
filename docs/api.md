@@ -139,9 +139,13 @@ Returns the state of the shadow (candidate) model deployment.
   "failed": 0,
   "agreement_identical": 8,
   "agreement_differing": 4,
-  "recent_entries": ["..."]
+  "recent_entries": []
 }
 ```
+
+> **Privacy**: `recent_entries` is always empty. Shadow logs are written with
+> prompts and responses SHA-256 hashed (no raw PII persisted) — the log file is
+> read-only intended for operators with file-system access.
 
 When shadow deployment is not configured (`SHADOW_ENABLED` unset or no shadow
 model given), `status` is `"disabled"` and all counters are zero.
@@ -156,7 +160,7 @@ model given), `status` is `"disabled"` and all counters are zero.
 | `processed` | Shadow predictions completed (success or failure) |
 | `failed` | Shadow predictions that errored (client response unaffected) |
 | `agreement_identical` / `agreement_differing` | Shadow output vs active output comparison buckets |
-| `recent_entries` | Last N records from the shadow comparison log |
+| `recent_entries` | Always `[]` — raw shadow records are not exposed through the API |
 
 **Example**
 ```bash
@@ -200,10 +204,16 @@ Interactive Swagger UI documentation.
 |---|---|---|
 | `SHADOW_ENABLED` | `false` | Set to `1`/`true`/`yes` to enable shadow traffic |
 | `SHADOW_MODEL_NAME` | — | Hugging Face model ID of the shadow candidate |
-| `SHADOW_MODEL_PATH` | — | Local artifact path of the shadow candidate (preferred over `SHADOW_MODEL_NAME`) |
+| `SHADOW_MODEL_PATH` | — | Local artifact path of the shadow candidate; must resolve inside the project root |
 | `SHADOW_LOG_PATH` | `artifacts/shadow/shadow_log.jsonl` | JSONL comparison log location |
-| `SHADOW_QUEUE_MAX` | `100` | Bounded worker queue size; excess jobs are dropped and counted |
-| `SHADOW_STATUS_ENTRIES` | `50` | Number of recent log entries returned by `/shadow-status` |
+| `SHADOW_QUEUE_MAX` | `100` | Bounded worker queue size (>= 1); excess jobs are dropped and counted |
+| `SHADOW_STATUS_ENTRIES` | `50` | Reserved; status endpoint no longer returns log contents |
+
+**Security notes**
+- `SHADOW_MODEL_PATH` is resolved and must stay within the project root (path traversal is rejected at load time).
+- Shadow models load with `trust_remote_code=False`.
+- `max_new_tokens` passed to shadow inference is capped at 1000.
+- Shadow logs store prompts/responses as SHA-256 hashes; raw PII is never persisted.
 
 **Example**
 ```bash

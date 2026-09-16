@@ -9,6 +9,7 @@ before it is promoted.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -24,6 +25,13 @@ from typing import Any, Dict, List, Optional
 from prometheus_client import Counter, Gauge, Histogram
 
 logger = logging.getLogger("mlops_api.shadow")
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+_PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+_MAX_SHADOW_TOKENS = 1000
+_PROMPT_HASH_PREFIX = 8
 
 # ---------------------------------------------------------------------------
 # Prometheus metrics for shadow traffic
@@ -51,6 +59,10 @@ SHADOW_QUEUE_LENGTH = Gauge("ml_shadow_queue_length", "Pending shadow jobs in th
 SHADOW_MODEL_LOADED = Gauge("ml_shadow_model_loaded", "1 if the shadow model is loaded, 0 otherwise")
 
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
 def _env_flag(name: str) -> bool:
     return os.getenv(name, "").lower() in {"1", "true", "yes"}
 
@@ -58,6 +70,59 @@ def _env_flag(name: str) -> bool:
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
+
+def _validate_int_env(name: str, default: int, min_value: int = 1) -> int:
+    raw = os.getenv(name, str(default))
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        logger.warning("invalid_int_env name=%s value=%r using_default=%d", name, raw, default)
+        return default
+    return max(min_value, value)
+
+
+def _redact_for_log(text: Optional[str]) -> str:
+    """Return a redacted representation of user-supplied text for safe logging.
+
+    Only a short hash prefix is kept for trace correlation; no raw content
+    is persisted.
+    """
+    if not text:
+        return ""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:_PROMPT_HASH_PREFIX]
+
+
+def _redact_log_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a shallow copy of a shadow log entry with PII fields redacted."""
+    redacted = dict(entry)
+    if "prompt" in redacted:
+        redacted["prompt"] = _redact_for_log(redacted["prompt"])
+    if "active" in redacted and isinstance(redacted["active"], dict):
+        redacted["active"] = dict(redacted["active"])
+        redacted["active"].pop("text", None)
+    if "shadow" in redacted and isinstance(redacted["shadow"], dict):
+        redacted["shadow"] = dict(redacted["shadow"])
+        redacted["shadow"].pop("text", None)
+        redacted["shadow"].pop("error", None)
+    return redacted
+
+
+def _normalize(text: Optional[str]) -> str:
+    return " ".join((text or "").strip().lower().split())
+
+
+def compare_outputs(active_text: Optional[str], shadow_text: Optional[str]) -> str:
+    """Bucket active vs shadow output as identical, differing, or error."""
+    if active_text is None or shadow_text is None:
+        return "error"
+    if _normalize(active_text) == _normalize(shadow_text):
+        return "identical"
+    return "differing"
+
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class ShadowConfig:
@@ -81,10 +146,14 @@ class ShadowConfig:
             model_name=os.getenv("SHADOW_MODEL_NAME", ""),
             model_path=os.getenv("SHADOW_MODEL_PATH", ""),
             log_path=os.getenv("SHADOW_LOG_PATH", "artifacts/shadow/shadow_log.jsonl"),
-            queue_maxsize=int(os.getenv("SHADOW_QUEUE_MAX", "100")),
-            status_entries=int(os.getenv("SHADOW_STATUS_ENTRIES", "50")),
+            queue_maxsize=_validate_int_env("SHADOW_QUEUE_MAX", 100, min_value=1),
+            status_entries=_validate_int_env("SHADOW_STATUS_ENTRIES", 50, min_value=1),
         )
 
+
+# ---------------------------------------------------------------------------
+# Data types
+# ---------------------------------------------------------------------------
 
 @dataclass
 class ShadowResult:
@@ -130,6 +199,10 @@ class ShadowStats:
         }
 
 
+# ---------------------------------------------------------------------------
+# Log store
+# ---------------------------------------------------------------------------
+
 class ShadowLogStore:
     """Appends shadow comparison records to a JSONL file."""
 
@@ -139,8 +212,9 @@ class ShadowLogStore:
     def append(self, entry: Dict[str, Any]) -> None:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
+            redacted = _redact_log_entry(entry)
             with self.path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(entry, default=str) + "\n")
+                handle.write(json.dumps(redacted, default=str) + "\n")
         except OSError:
             logger.exception("shadow_log_append_failed path=%s", self.path)
 
@@ -161,18 +235,9 @@ class ShadowLogStore:
         return entries
 
 
-def _normalize(text: Optional[str]) -> str:
-    return " ".join((text or "").strip().lower().split())
-
-
-def compare_outputs(active_text: Optional[str], shadow_text: Optional[str]) -> str:
-    """Bucket active vs shadow output as identical, differing, or error."""
-    if active_text is None or shadow_text is None:
-        return "error"
-    if _normalize(active_text) == _normalize(shadow_text):
-        return "identical"
-    return "differing"
-
+# ---------------------------------------------------------------------------
+# Model predictor
+# ---------------------------------------------------------------------------
 
 class ShadowPredictor:
     """Lazily loads and runs a candidate model, fully isolated from the active model."""
@@ -190,6 +255,20 @@ class ShadowPredictor:
     def is_loaded(self) -> bool:
         return self._model is not None and self._tokenizer is not None
 
+    def _validate_model_path(self) -> None:
+        """Reject model paths that escape the project root (CWE-22)."""
+        if not self.config.model_path:
+            return
+        resolved = Path(self.config.model_path).resolve()
+        try:
+            resolved.relative_to(_PROJECT_ROOT)
+        except ValueError:
+            raise RuntimeError(
+                f"Shadow model path {resolved} is outside the project root "
+                f"{_PROJECT_ROOT}. Set SHADOW_MODEL_PATH to a path inside the "
+                f"project or use SHADOW_MODEL_NAME for a Hub model."
+            )
+
     def _load(self) -> None:
         if self.is_loaded:
             return
@@ -198,6 +277,8 @@ class ShadowPredictor:
                 "Shadow model is enabled but neither SHADOW_MODEL_NAME nor "
                 "SHADOW_MODEL_PATH is set."
             )
+        self._validate_model_path()
+
         if self._torch is None or self._auto_tokenizer_cls is None or self._auto_model_cls is None:
             try:
                 import torch
@@ -211,12 +292,16 @@ class ShadowPredictor:
 
         source = (
             self.config.model_path
-            if Path(self.config.model_path).exists()
+            if self.config.model_path and Path(self.config.model_path).exists()
             else self.config.model_name
         )
         try:
-            self._tokenizer = self._auto_tokenizer_cls.from_pretrained(source)
-            self._model = self._auto_model_cls.from_pretrained(source)
+            self._tokenizer = self._auto_tokenizer_cls.from_pretrained(
+                source, trust_remote_code=False
+            )
+            self._model = self._auto_model_cls.from_pretrained(
+                source, trust_remote_code=False
+            )
             if self._tokenizer.pad_token is None:
                 self._tokenizer.pad_token = self._tokenizer.eos_token
             SHADOW_MODEL_LOADED.set(1)
@@ -253,7 +338,7 @@ class ShadowPredictor:
         with no_grad:
             outputs = model.generate(
                 **inputs,
-                max_new_tokens=params.get("max_new_tokens", 150),
+                max_new_tokens=min(params.get("max_new_tokens", 150), _MAX_SHADOW_TOKENS),
                 temperature=params.get("temperature", 0.7),
                 do_sample=True,
                 top_k=params.get("top_k", 50),
@@ -274,6 +359,10 @@ class ShadowPredictor:
             latency_ms=latency_ms,
         )
 
+
+# ---------------------------------------------------------------------------
+# Dispatcher (bounded queue + daemon worker)
+# ---------------------------------------------------------------------------
 
 class ShadowDispatcher:
     """Bounded queue + single background worker that runs shadow predictions.
@@ -434,9 +523,15 @@ class ShadowDispatcher:
         self._stop_event.set()
         if self.running:
             self.flush(timeout=5)
-            self._thread.join(timeout=5)
+            self._thread.join(timeout=10)
+            if self._thread.is_alive():
+                logger.warning("shadow_worker_did_not_stop_gracefully")
         self._thread = None
 
+
+# ---------------------------------------------------------------------------
+# Facade
+# ---------------------------------------------------------------------------
 
 class ShadowDeployment:
     """Facade wiring config, predictor, log store and dispatcher together."""
@@ -494,6 +589,6 @@ class ShadowDeployment:
             "model_ready": self.predictor.is_loaded,
             "queue_length": self.dispatcher.queue_size(),
             "log_path": str(self.config.log_path),
-            "recent_entries": self.log_store.recent(limit=self.config.status_entries),
+            "recent_entries": [],  # redacted for security; use log file for full records
             **self.dispatcher.stats.snapshot(),
         }
