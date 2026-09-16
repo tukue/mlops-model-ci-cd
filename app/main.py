@@ -12,6 +12,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
 from app.schemas import PredictRequest, PredictResponse
+from app.shadow import ShadowDeployment
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 
 
@@ -130,6 +131,10 @@ def setup_telemetry():
 _tokenizer = None
 _model = None
 MODEL_LOADED.set(0)
+
+# Shadow deployment: a candidate model served in the background while the
+# active model answers. Disabled unless SHADOW_ENABLED and a shadow model are configured.
+SHADOW = ShadowDeployment()
 
 def get_model():
     global _tokenizer, _model, torch, AutoModelForCausalLM, AutoTokenizer
@@ -316,6 +321,8 @@ def startup_event():
     if not SKIP_TELEMETRY:
         setup_telemetry()
 
+    SHADOW.start()
+
     if SKIP_MODEL_LOAD_ON_STARTUP:
         logger.info("skipping_model_load_on_startup")
         return
@@ -325,12 +332,16 @@ def startup_event():
     except Exception:
         logger.critical("could_not_load_model_on_startup")
 
+@app.on_event("shutdown")
+def shutdown_event():
+    SHADOW.stop()
+
 @app.get("/")
 def root():
     return {
         "message": "MLOps API is running",
         "model_name": MODEL_NAME,
-        "endpoints": ["/health", "/predict", "/drift-status", "/metrics", "/docs"],
+        "endpoints": ["/health", "/predict", "/drift-status", "/shadow-status", "/metrics", "/docs"],
     }
 
 @app.get("/health")
@@ -359,8 +370,12 @@ def metrics():
 def drift_status():
     return load_drift_status()
 
+@app.get("/shadow-status")
+def shadow_status():
+    return SHADOW.status()
+
 @app.post("/predict", response_model=PredictResponse)
-def predict(req: PredictRequest):
+def predict(req: PredictRequest, request: Request):
     with PREDICTION_LATENCY.time():
         try:
             tokenizer, model = get_model()
@@ -419,6 +434,20 @@ def predict(req: PredictRequest):
             PREDICTION_CLASS_DISTRIBUTION.labels(
                 class_name=classify_prediction_output(generated_text),
             ).inc()
+
+            SHADOW.capture(
+                prompt=req.prompt,
+                params={
+                    "max_new_tokens": req.max_new_tokens,
+                    "temperature": req.temperature,
+                    "top_p": req.top_p,
+                    "top_k": req.top_k,
+                },
+                active_text=generated_text,
+                active_tokens=output_token_count,
+                request_id=getattr(request.state, "request_id", "n/a"),
+                active_model=MODEL_NAME,
+            )
 
             return PredictResponse(generated_text=generated_text, model_version=MODEL_NAME)
 

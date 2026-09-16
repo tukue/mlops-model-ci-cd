@@ -78,6 +78,9 @@ jobs:
         # Test health endpoint only; full prediction coverage runs in pytest.
         HEALTH_JSON=$(curl -sSf http://127.0.0.1:8000/health)
         echo "$HEALTH_JSON" | python -c 'import json,sys; data=json.load(sys.stdin); assert data["status"] in ("ok","degraded"); assert "model_ready" in data'
+
+        SHADOW_JSON=$(curl -sSf http://127.0.0.1:8000/shadow-status)
+        echo "$SHADOW_JSON" | python -c 'import json,sys; data=json.load(sys.stdin); assert data["status"] == "disabled" and "processed" in data'
         
         # Stop and remove container
         docker stop mlops-api-container

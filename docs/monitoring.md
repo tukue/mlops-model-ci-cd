@@ -122,6 +122,33 @@ All Prometheus metrics are exported at `GET /metrics`:
 | `ml_prediction_errors_total` | Counter | `reason` | Inference failures by reason |
 | `ml_prediction_class_distribution_total` | Counter | `class_name` | Output length buckets (short/medium/long/empty) |
 
+### Shadow Deployment Metrics
+
+Tracks "dark launch" traffic: a candidate model that runs alongside the active
+model on live requests without affecting responses.
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `ml_shadow_requests_total` | Counter | `outcome` | Shadow jobs by outcome (`queued`, `skipped`, `dropped`, `shadow_failed`) |
+| `ml_shadow_duration_seconds` | Histogram | — | Shadow inference latency distribution |
+| `ml_shadow_agreement_total` | Counter | `agreement` | Shadow output vs active output (`identical`, `differing`, `error`) |
+| `ml_shadow_errors_total` | Counter | `error_type` | Shadow inference errors by exception type |
+| `ml_shadow_queue_length` | Gauge | — | Pending shadow jobs in the worker queue |
+| `ml_shadow_model_loaded` | Gauge | — | 1 = shadow model loaded, 0 = not loaded |
+
+Example PromQL:
+
+```promql
+# Shadow candidates that disagree with the active model
+sum by (agreement) (rate(ml_shadow_agreement_total[5m]))
+
+# Shadow inference error rate
+rate(ml_shadow_errors_total[5m])
+
+# Shadow worker backlog
+ml_shadow_queue_length
+```
+
 ### API Metrics
 
 | Metric | Type | Labels | Description |

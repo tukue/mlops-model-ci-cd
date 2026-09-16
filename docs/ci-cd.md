@@ -57,7 +57,7 @@ docker build -t mlops-api .
 - Start container, wait up to 60s for `/health`
 - Validate `GET /` returns endpoint list
 - Validate `GET /health` returns status
-- Validate `GET /docs` returns Swagger UI
+- Validate `GET /shadow-status` returns disabled state with counters
 - Validate `GET /metrics` contains expected metrics
 - Validate `POST /predict` returns `generated_text`
 

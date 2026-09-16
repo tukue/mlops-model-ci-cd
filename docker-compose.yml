@@ -11,6 +11,9 @@ services:
       - LOG_LEVEL=INFO
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
       - OTEL_SERVICE_NAME=mlops-llm-api
+      # Shadow deployment (uncomment to enable)
+      # - SHADOW_ENABLED=1
+      # - SHADOW_MODEL_PATH=/app/artifacts/shadow-model
     depends_on:
       otel-collector:
         condition: service_started
