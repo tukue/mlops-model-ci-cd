@@ -120,8 +120,9 @@ flowchart TB
 |---|---|
 | `GET /health` | Readiness check with model status and resource snapshot |
 | `POST /predict` | LLM inference with configurable generation parameters |
-| `GET /metrics` | Prometheus metrics in text format |
 | `GET /drift-status` | Latest drift detection summary |
+| `GET /shadow-status` | Shadow ("dark launch") candidate model status and comparison log |
+| `GET /metrics` | Prometheus metrics in text format |
 | `GET /docs` | Interactive Swagger UI |
 
 ```bash
@@ -146,6 +147,35 @@ curl $BASE_URL/metrics
 | Grafana | `http://<deploy-host>:3000` (default `http://localhost:3000`) |
 | Prometheus | `http://<deploy-host>:9090` |
 | Tempo | `http://<deploy-host>:3200` |
+
+## Shadow Deployment
+
+A candidate model can be safely validated against live traffic without affecting
+responses: the active model keeps answering while the shadow ("dark launch")
+candidate runs the same prompt in a serialized background worker. Outputs are
+compared and appended to `artifacts/shadow/shadow_log.jsonl` alongside
+Prometheus counters for agreement, latency, and error rates.
+
+| Variable | Default | Description |
+|---|---|---|
+| `SHADOW_ENABLED` | `false` | Enable shadow capture (`1`/`true`/`yes`) |
+| `SHADOW_MODEL_NAME` | — | Hugging Face model ID of the shadow candidate |
+| `SHADOW_MODEL_PATH` | — | Local path to shadow artifact dir |
+| `SHADOW_LOG_PATH` | `artifacts/shadow/shadow_log.jsonl` | JSONL comparison log |
+| `SHADOW_QUEUE_MAX` | `100` | Bounded background worker queue |
+
+```bash
+# Run with a shadow candidate
+SHADOW_ENABLED=1 \
+SHADOW_MODEL_PATH=./artifacts/Qwen2.5-0.5B-Instruct \
+docker-compose up --build
+
+# Inspect shadow status
+curl http://localhost:8000/shadow-status
+```
+
+See the [API docs](docs/api.md) and [monitoring guide](docs/monitoring.md) for
+full details and example queries.
 
 ## Docs
 

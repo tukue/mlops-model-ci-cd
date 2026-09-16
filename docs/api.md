@@ -16,7 +16,7 @@ Returns API information and available endpoints.
 {
   "message": "MLOps API is running",
   "model_name": "Qwen/Qwen2.5-0.5B-Instruct",
-  "endpoints": ["/health", "/predict", "/drift-status", "/metrics", "/docs"]
+  "endpoints": ["/health", "/predict", "/drift-status", "/shadow-status", "/metrics", "/docs"]
 }
 ```
 
@@ -76,6 +76,11 @@ Run model inference with configurable generation parameters.
 }
 ```
 
+> **Shadow mode**: when `SHADOW_ENABLED` is set, each request is also copied
+> to the shadow candidate model in the background (see `/shadow-status`).
+> The response above is always produced by the active model — shadow output
+> never leaks into the client response.
+
 **Example**
 ```bash
 curl -X POST ${BASE_URL:-http://localhost:8000}/predict \
@@ -114,6 +119,56 @@ When no report exists:
 
 ---
 
+### GET /shadow-status
+
+Returns the state of the shadow (candidate) model deployment.
+
+**Response**
+```json
+{
+  "status": "ok",
+  "enabled": true,
+  "model_name": "Qwen/Qwen2.5-0.5B-Instruct-FineTuned",
+  "model_ready": true,
+  "queue_length": 0,
+  "log_path": "artifacts/shadow/shadow_log.jsonl",
+  "skipped": 0,
+  "queued": 12,
+  "dropped": 0,
+  "processed": 12,
+  "failed": 0,
+  "agreement_identical": 8,
+  "agreement_differing": 4,
+  "recent_entries": []
+}
+```
+
+> **Privacy**: `recent_entries` is always empty. Shadow logs are written with
+> prompts and responses SHA-256 hashed (no raw PII persisted) — the log file is
+> read-only intended for operators with file-system access.
+
+When shadow deployment is not configured (`SHADOW_ENABLED` unset or no shadow
+model given), `status` is `"disabled"` and all counters are zero.
+
+| Field | Description |
+|---|---|
+| `status` | `ok` when enabled, `disabled` otherwise |
+| `enabled` | Whether shadow traffic capture is active |
+| `model_name` | Configured shadow model id or path |
+| `model_ready` | Whether the shadow model is loaded in memory |
+| `queue_length` | Pending shadow jobs awaiting the background worker |
+| `processed` | Shadow predictions completed (success or failure) |
+| `failed` | Shadow predictions that errored (client response unaffected) |
+| `agreement_identical` / `agreement_differing` | Shadow output vs active output comparison buckets |
+| `recent_entries` | Always `[]` — raw shadow records are not exposed through the API |
+
+**Example**
+```bash
+curl ${BASE_URL:-http://localhost:8000}/shadow-status
+```
+
+---
+
 ### GET /metrics
 
 Prometheus metrics endpoint for scraping. Returns `text/plain` in Prometheus exposition format.
@@ -135,3 +190,34 @@ ml_prediction_duration_seconds_bucket{le="0.01"} 5.0
 ### GET /docs
 
 Interactive Swagger UI documentation.
+
+---
+
+## Shadow Deployment Configuration
+
+> A candidate ("challenger") model can be safely evaluated against production
+> traffic before promotion: live requests are copied to the shadow model in the
+> background while the active model keeps answering. See `/shadow-status` and
+> the shadow JSONL log for comparison results.
+
+| Variable | Default | Description |
+|---|---|---|
+| `SHADOW_ENABLED` | `false` | Set to `1`/`true`/`yes` to enable shadow traffic |
+| `SHADOW_MODEL_NAME` | — | Hugging Face model ID of the shadow candidate |
+| `SHADOW_MODEL_PATH` | — | Local artifact path of the shadow candidate; must resolve inside the project root |
+| `SHADOW_LOG_PATH` | `artifacts/shadow/shadow_log.jsonl` | JSONL comparison log location |
+| `SHADOW_QUEUE_MAX` | `100` | Bounded worker queue size (>= 1); excess jobs are dropped and counted |
+| `SHADOW_STATUS_ENTRIES` | `50` | Reserved; status endpoint no longer returns log contents |
+
+**Security notes**
+- `SHADOW_MODEL_PATH` is resolved and must stay within the project root (path traversal is rejected at load time).
+- Shadow models load with `trust_remote_code=False`.
+- `max_new_tokens` passed to shadow inference is capped at 1000.
+- Shadow logs store prompts/responses as SHA-256 hashes; raw PII is never persisted.
+
+**Example**
+```bash
+SHADOW_ENABLED=1 \
+SHADOW_MODEL_PATH=/app/artifacts/Qwen2.5-0.5B-Instruct-FineTuned \
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
